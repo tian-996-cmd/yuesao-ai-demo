@@ -19,9 +19,9 @@ import type { Customer, NewCustomerInput } from '@/lib/types';
 import { customerService } from '@/services/customer-service';
 import { nurseService } from '@/services/nurse-service';
 
-export default function Home() {
+export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
   const [loggedIn,setLoggedIn] = useState(false);
-  const [view,setView] = useState<ViewName>('dashboard');
+  const [view,setView] = useState<ViewName>(initialView);
   const [customers,setCustomers] = useState<Customer[]>(mockCustomers);
   const [nurses,setNurses] = useState<MaternityNurse[]>(mockNurses);
   const [selectedId,setSelectedId] = useState('wang');
@@ -33,14 +33,15 @@ export default function Home() {
   const [editingNurse,setEditingNurse] = useState<MaternityNurse>();
   const [message,setMessage] = useState('');
 
-  useEffect(()=>{setCustomers(customerService.load());setNurses(nurseService.load())},[]);
+  useEffect(()=>{setCustomers(customerService.load());setNurses(nurseService.load());const parts=window.location.pathname.split('/').filter(Boolean);if(parts[0]==='nurses'&&parts[1])setSelectedNurseId(parts[1]);if(parts[0]==='customers'&&parts[1])setSelectedId(parts[1])},[]);
   const showMessage=(text:string)=>{setMessage(text);window.setTimeout(()=>setMessage(''),2600)};
   const persistCustomers=(next:Customer[])=>{setCustomers(next);customerService.save(next)};
   const persistNurses=(next:MaternityNurse[])=>{setNurses(next);nurseService.save(next)};
-  const navigate=(next:ViewName)=>{setView(next);window.scrollTo(0,0)};
-  const openCustomer=(id:string)=>{setSelectedId(id);navigate('detail')};
-  const openNurse=(id:string)=>{setSelectedNurseId(id);navigate('nurseDetail')};
-  const openSchedule=(id?:string)=>{setFocusNurseId(id);navigate('schedule')};
+  const pathFor=(next:ViewName)=>next==='dashboard'?'/' : next==='customers'?'/customers' : next==='nurses'?'/nurses' : next==='schedule'?'/schedule' : next==='settings'?'/settings' : window.location.pathname;
+  const navigate=(next:ViewName)=>{setView(next);window.history.pushState({},'',pathFor(next));window.scrollTo(0,0)};
+  const openCustomer=(id:string)=>{setSelectedId(id);setView('detail');window.history.pushState({},'',`/customers/${id}`);window.scrollTo(0,0)};
+  const openNurse=(id:string)=>{setSelectedNurseId(id);setView('nurseDetail');window.history.pushState({},'',`/nurses/${id}`);window.scrollTo(0,0)};
+  const openSchedule=(id?:string)=>{setFocusNurseId(id);setView('schedule');window.history.pushState({},'',id?`/schedule?nurse=${id}`:'/schedule');window.scrollTo(0,0)};
   const notify=(name:string)=>{showMessage(['AI 匹配','重新匹配','推荐给客户'].includes(name)?'智能推荐功能将在下一阶段加入。':`${name}功能将在后续 Demo 中加入。`)};
   const saveCustomer=(input:NewCustomerInput)=>{const item:Customer={...input,id:`local-${Date.now()}`,phone:input.phone.replace(/(\d{3})\d+(\d{4})/,'$1****$2'),family:'待补充家庭情况。',requirements:[],exclusions:[],status:'新客户',recommendedCount:0,consultant:'王敏',lastFollowUp:'刚刚',followUps:[{time:'刚刚',content:'新建客户档案。'}]};persistCustomers([item,...customers]);showMessage('客户已保存到本地列表')};
   const saveNurse=(input:NurseFormInput)=>{
@@ -81,3 +82,5 @@ export default function Home() {
     {message&&<output className="toast">{message}</output>}
   </>;
 }
+
+export default function Home(){return <DemoApp/>}
