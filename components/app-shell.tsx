@@ -3,19 +3,19 @@
 import { CalendarDays, HeartHandshake, Home, Settings, Sparkles, UserRound, UsersRound, ClipboardList } from 'lucide-react';
 import type { ReactNode } from 'react';
 
-export type ViewName = 'dashboard' | 'customers' | 'detail';
+export type ViewName = 'dashboard' | 'customers' | 'detail' | 'nurses' | 'nurseDetail' | 'schedule' | 'settings';
 
 const desktopItems = [
   { label:'工作台', icon:Home, view:'dashboard' as const },
   { label:'客户', icon:UsersRound, view:'customers' as const },
-  { label:'月嫂', icon:UserRound },
-  { label:'档期', icon:CalendarDays },
+  { label:'月嫂', icon:UserRound, view:'nurses' as const },
+  { label:'档期', icon:CalendarDays, view:'schedule' as const },
   { label:'AI 匹配', icon:Sparkles },
   { label:'跟进', icon:ClipboardList },
 ];
 
 export function AppShell({ children, view, onNavigate, onSoon }: { children: ReactNode; view: ViewName; onNavigate:(view:ViewName)=>void; onSoon:(name:string)=>void }) {
-  const active = view === 'detail' ? 'customers' : view;
+  const active = view === 'detail' ? 'customers' : view === 'nurseDetail' ? 'nurses' : view;
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -24,7 +24,7 @@ export function AppShell({ children, view, onNavigate, onSoon }: { children: Rea
           {desktopItems.map((item) => <button key={item.label} className={active === item.view ? 'active' : ''} onClick={() => item.view ? onNavigate(item.view) : onSoon(item.label)}><item.icon />{item.label}{item.label === 'AI 匹配' && <span className="nav-badge">AI</span>}</button>)}
         </nav>
         <div className="sidebar-bottom">
-          <button onClick={() => onSoon('设置')}><Settings />设置</button>
+          <button className={active === 'settings' ? 'active' : ''} onClick={() => onNavigate('settings')}><Settings />设置</button>
           <div className="consultant"><div className="avatar">王</div><div><strong>王敏</strong><span>销售顾问</span></div><span className="online-dot" /></div>
         </div>
       </aside>
@@ -33,7 +33,7 @@ export function AppShell({ children, view, onNavigate, onSoon }: { children: Rea
         <main className="content">{children}</main>
       </div>
       <nav className="bottom-nav" aria-label="手机导航">
-        {[{label:'首页',icon:Home,view:'dashboard' as const},{label:'客户',icon:UsersRound,view:'customers' as const},{label:'匹配',icon:Sparkles},{label:'月嫂',icon:UserRound},{label:'我的',icon:Settings}].map((item) => <button key={item.label} className={active === item.view ? 'active' : ''} onClick={() => item.view ? onNavigate(item.view) : onSoon(item.label)}><item.icon /><span>{item.label}</span></button>)}
+        {[{label:'首页',icon:Home,view:'dashboard' as const},{label:'客户',icon:UsersRound,view:'customers' as const},{label:'匹配',icon:Sparkles},{label:'月嫂',icon:UserRound,view:'nurses' as const},{label:'我的',icon:Settings,view:'settings' as const}].map((item) => <button key={item.label} className={active === item.view ? 'active' : ''} onClick={() => item.view ? onNavigate(item.view) : onSoon(item.label)}><item.icon /><span>{item.label}</span></button>)}
       </nav>
     </div>
   );
