@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import './globals.css';
+import './v3.css';
 
 export const metadata: Metadata = {
   title: '月嫂 AI 业务助手',
