@@ -1,0 +1,23 @@
+'use client';
+import {ImagePlus,Trash2,Upload} from 'lucide-react';
+import {useEffect,useRef,useState} from 'react';
+import type {MaternityNurse} from '@/lib/nurse-types';
+import type {CookingTag,MediaUploadMetadata,MediaVisibility} from '@/lib/media-types';
+import {Button} from './ui/button';
+import {Input} from './ui/input';
+import {Textarea} from './ui/textarea';
+import {Sheet,SheetContent,SheetDescription,SheetFooter,SheetHeader,SheetTitle} from './ui/sheet';
+
+type Kind=MediaUploadMetadata['category'];
+const kinds:[Kind,string][]=[['profile','形象照'],['service_case','服务案例'],['cooking','月子餐']];
+const tags:CookingTag[]=['早餐','午餐','晚餐','汤品','加餐','主食'];
+
+export function MediaUploadSheet({open,onOpenChange,nurse,onSave}:{open:boolean;onOpenChange:(x:boolean)=>void;nurse:MaternityNurse;onSave:(files:File[],metadata:MediaUploadMetadata)=>Promise<void>}){
+  const [kind,setKind]=useState<Kind>('profile'),[files,setFiles]=useState<File[]>([]),[title,setTitle]=useState(''),[caption,setCaption]=useState(''),[visibility,setVisibility]=useState<MediaVisibility>('internal'),[serviceRecordId,setServiceRecordId]=useState(nurse.serviceHistory[0]?.id),[tag,setTag]=useState<CookingTag>('午餐'),[error,setError]=useState(''),[saving,setSaving]=useState(false);const urls=useRef<string[]>([]);
+  const clear=()=>{urls.current.forEach(URL.revokeObjectURL);urls.current=[];setFiles([]);setTitle('');setCaption('');setError('');setVisibility('internal')};
+  useEffect(()=>()=>urls.current.forEach(URL.revokeObjectURL),[]);
+  const add=(incoming:File[])=>{const next=[...files,...incoming].slice(0,20);if(incoming.some(x=>!['image/jpeg','image/png','image/webp'].includes(x.type)))return setError('仅支持 JPG、PNG、WEBP');if(incoming.some(x=>x.size>10*1024*1024))return setError('单张图片需小于10MB');if(files.length+incoming.length>20)return setError('一次最多上传20张图片');setError('');setFiles(next)};
+  const remove=(index:number)=>setFiles(files.filter((_,i)=>i!==index));
+  const submit=async()=>{if(!files.length)return setError('请先选择图片');setSaving(true);setError('');try{await onSave(files,{nurseId:nurse.id,category:kind,serviceRecordId:kind==='service_case'?serviceRecordId:undefined,title,caption,tag:kind==='cooking'?tag:undefined,visibility});clear();onOpenChange(false)}catch(e){setError(e instanceof Error?e.message:'上传失败，请重试')}finally{setSaving(false)}};
+  return <Sheet open={open} onOpenChange={x=>{onOpenChange(x);if(!x)clear()}}><SheetContent className="media-upload-sheet"><SheetHeader><div className="eyebrow">照片管理</div><SheetTitle>上传照片</SheetTitle><SheetDescription>文件仅保存在当前浏览器；支持 JPG / PNG / WEBP，单张不超过10MB。</SheetDescription></SheetHeader><div className="upload-form"><label>图片类型</label><div className="media-kind-picker">{kinds.map(([value,label])=><button key={value} className={kind===value?'active':''} onClick={()=>setKind(value)}>{label}</button>)}</div><label className="drop-zone" onDragOver={e=>e.preventDefault()} onDrop={e=>{e.preventDefault();add(Array.from(e.dataTransfer.files))}}><Upload/><strong>点击或拖拽上传</strong><span>可一次选择多张，最多20张</span><input type="file" accept="image/jpeg,image/png,image/webp" multiple onChange={e=>add(Array.from(e.target.files??[]))}/></label>{files.length>0&&<div className="pending-media">{files.map((file,index)=>{let url=urls.current[index];if(!url){url=URL.createObjectURL(file);urls.current[index]=url}return <figure key={`${file.name}-${index}`}><img src={url} alt="待上传预览"/><button aria-label={`移除 ${file.name}`} onClick={()=>remove(index)}><Trash2/></button></figure>})}</div>}{kind==='service_case'&&<label>关联服务记录<select value={serviceRecordId} onChange={e=>setServiceRecordId(e.target.value)}>{nurse.serviceHistory.map(x=><option key={x.id} value={x.id}>{x.month} · {x.city} · {x.familyType} · {x.days}天</option>)}</select></label>}{kind==='cooking'&&<label>月子餐标签<select value={tag} onChange={e=>setTag(e.target.value as CookingTag)}>{tags.map(x=><option key={x}>{x}</option>)}</select></label>}<label>标题（将应用到本次照片）<Input value={title} onChange={e=>setTitle(e.target.value)} placeholder="例如：山药排骨汤"/></label><label>简单说明<Textarea value={caption} onChange={e=>setCaption(e.target.value)} placeholder="例如：清淡少油"/></label><label>可见范围<select value={visibility} onChange={e=>setVisibility(e.target.value as MediaVisibility)}><option value="internal">仅内部可见</option><option value="customer_shareable">可向客户展示（确认已获授权）</option></select></label>{error&&<p className="media-error">{error}</p>}</div><SheetFooter><Button variant="outline" onClick={()=>onOpenChange(false)}>取消</Button><Button className="primary-button" disabled={saving} onClick={submit}><ImagePlus/>{saving?'处理中…':`保存 ${files.length||''} 张照片`}</Button></SheetFooter></SheetContent></Sheet>;
+}

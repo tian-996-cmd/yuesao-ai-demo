@@ -17,17 +17,21 @@ import { ScheduleView } from '@/components/schedule-view';
 import { SettingsView } from '@/components/settings-view';
 import { mockCustomers } from '@/lib/mock-data';
 import { mockNurses } from '@/lib/mock-nurses';
+import { mockMediaAssets } from '@/lib/mock-media';
+import type { MediaAsset, MediaUploadMetadata } from '@/lib/media-types';
 import type { MaternityNurse, NurseFormInput, NurseStatus } from '@/lib/nurse-types';
 import type { Customer, DemandProfile, NewCustomerInput } from '@/lib/types';
 import { addDays } from '@/lib/v3-engine';
 import { customerService } from '@/services/customer-service';
 import { nurseService } from '@/services/nurse-service';
+import { mediaService } from '@/services/media-service';
 
 export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
   const [loggedIn,setLoggedIn] = useState(false);
   const [view,setView] = useState<ViewName>(initialView);
   const [customers,setCustomers] = useState<Customer[]>(mockCustomers);
   const [nurses,setNurses] = useState<MaternityNurse[]>(mockNurses);
+  const [media,setMedia] = useState<MediaAsset[]>(mockMediaAssets);
   const [selectedId,setSelectedId] = useState('wang');
   const [selectedNurseId,setSelectedNurseId] = useState('nurse_001');
   const [nurseFilter,setNurseFilter] = useState<NurseStatus>();
@@ -40,7 +44,7 @@ export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
   const [followupOpen,setFollowupOpen] = useState(false);
   const [matchingCustomerId,setMatchingCustomerId] = useState('wang');
 
-  useEffect(()=>{setCustomers(customerService.load());setNurses(nurseService.load());const parts=window.location.pathname.split('/').filter(Boolean);if(parts[0]==='nurses'&&parts[1])setSelectedNurseId(parts[1]);if(parts[0]==='customers'&&parts[1])setSelectedId(parts[1])},[]);
+  useEffect(()=>{setCustomers(customerService.load());setNurses(nurseService.load());void mediaService.listAll().then(setMedia);const parts=window.location.pathname.split('/').filter(Boolean);if(parts[0]==='nurses'&&parts[1])setSelectedNurseId(parts[1]);if(parts[0]==='customers'&&parts[1])setSelectedId(parts[1])},[]);
   const showMessage=(text:string)=>{setMessage(text);window.setTimeout(()=>setMessage(''),2600)};
   const persistCustomers=(next:Customer[])=>{setCustomers(next);customerService.save(next)};
   const persistNurses=(next:MaternityNurse[])=>{setNurses(next);nurseService.save(next)};
@@ -63,7 +67,11 @@ export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
   const recommend=(ids:string[])=>{updateCustomer(matchingCustomerId,c=>({...c,status:'已推荐',recommendedCount:ids.length,recommendedNurseIds:ids,lastFollowUp:'刚刚',followUps:[{time:'09月07日 14:40',content:`已向客户推荐 ${ids.length} 位候选月嫂。`},...c.followUps]}));showMessage('候选人已推荐给客户')};
   const lock=(nurseId:string)=>{const customer=customers.find(c=>c.id===matchingCustomerId)??customers[0];const end=addDays(customer.dueDate,customer.serviceDays-1);updateCustomer(customer.id,c=>({...c,status:'已锁定',lockedNurseId:nurseId,lastFollowUp:'刚刚',followUps:[{time:'09月07日 14:45',content:'客户确认人选，服务档期已锁定。'},...c.followUps]}));persistNurses(nurses.map(n=>n.id===nurseId?{...n,status:'已锁档',availableFrom:addDays(end,4),schedule:[...n.schedule,{id:`locked-${customer.id}-${Date.now()}`,nurseId:n.id,customerId:customer.id,customerName:customer.name,city:customer.city,start:customer.dueDate,end,status:'已锁档',note:'由智能匹配中心锁定'}]}:n));showMessage('档期已锁定，并同步到档期中心和工作台')};
   const addNurseSchedule=()=>{const start=selectedNurse.availableFrom,end=addDays(start,25);persistNurses(nurses.map(n=>n.id===selectedNurse.id?{...n,status:'已锁档',availableFrom:addDays(end,4),schedule:[...n.schedule,{id:`manual-${Date.now()}`,nurseId:n.id,start,end,status:'已锁档',note:'顾问新增档期'}]}:n));showMessage('新档期已加入排期中心')};
-  const reset=()=>{setCustomers(customerService.reset());setNurses(nurseService.reset());setSelectedId('wang');setSelectedNurseId('nurse_001');showMessage('客户与月嫂演示数据已恢复')};
+  const uploadMedia=async(files:File[],metadata:MediaUploadMetadata)=>{setMedia(await mediaService.upload(files,metadata));showMessage(`${files.length} 张照片已保存到当前浏览器`)};
+  const deleteMedia=async(id:string)=>{setMedia(await mediaService.delete(id));showMessage('照片已删除，关联服务记录保持不变')};
+  const updateMedia=async(id:string,patch:Partial<MediaAsset>)=>{setMedia(await mediaService.updateMetadata(id,patch));showMessage('照片信息已更新')};
+  const setAvatar=async(id:string)=>{setMedia(await mediaService.setAvatar(id));showMessage('头像已更新，原头像已保留为形象照')};
+  const reset=()=>{setCustomers(customerService.reset());setNurses(nurseService.reset());setMedia(mediaService.reset());setSelectedId('wang');setSelectedNurseId('nurse_001');showMessage('客户、月嫂与相册演示数据已恢复')};
 
   useEffect(()=>{
     type WebTool = { name:string; title:string; description:string; inputSchema:object; annotations:object; execute:(input:unknown)=>unknown };
@@ -85,10 +93,10 @@ export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
       {view==='dashboard'&&<DashboardView customers={customers} nurses={nurses} onOpenCustomer={openCustomer} onCreateCustomer={()=>setCustomerSheetOpen(true)} onMatching={openMatching} onSchedule={()=>openSchedule('nurse_002')} onParse={id=>{setSelectedId(id);setDemandOpen(true)}}/>} 
       {view==='customers'&&<CustomersView customers={customers} onOpen={openCustomer} onCreate={()=>setCustomerSheetOpen(true)} onMatch={openMatching}/>} 
       {view==='detail'&&<CustomerDetailView customer={selected} nurses={nurses} onBack={()=>navigate('customers')} onFollow={()=>setFollowupOpen(true)} onParse={()=>setDemandOpen(true)} onMatch={()=>openMatching(selected.id)} onOpenNurse={openNurse}/>} 
-      {view==='nurses'&&<NursesView nurses={nurses} initialFilter={nurseFilter} onOpen={openNurse} onCreate={()=>{setEditingNurse(undefined);setNurseSheetOpen(true)}}/>}
-      {view==='nurseDetail'&&<NurseDetailView nurse={selectedNurse} onBack={()=>navigate('nurses')} onEdit={()=>{setEditingNurse(selectedNurse);setNurseSheetOpen(true)}} onSchedule={()=>openSchedule(selectedNurse.id)} onRecommend={()=>openMatching()} onAddSchedule={addNurseSchedule}/>} 
+      {view==='nurses'&&<NursesView nurses={nurses} media={media} initialFilter={nurseFilter} onOpen={openNurse} onCreate={()=>{setEditingNurse(undefined);setNurseSheetOpen(true)}}/>}
+      {view==='nurseDetail'&&<NurseDetailView nurse={selectedNurse} media={media} onBack={()=>navigate('nurses')} onEdit={()=>{setEditingNurse(selectedNurse);setNurseSheetOpen(true)}} onSchedule={()=>openSchedule(selectedNurse.id)} onRecommend={()=>openMatching()} onAddSchedule={addNurseSchedule} onUpload={uploadMedia} onDeleteMedia={deleteMedia} onUpdateMedia={updateMedia} onSetAvatar={setAvatar}/>}
       {view==='schedule'&&<ScheduleView nurses={nurses} customers={customers} focusNurseId={focusNurseId} onOpenNurse={openNurse} onOpenCustomer={openCustomer}/>} 
-      {view==='matching'&&<MatchingView customers={customers} nurses={nurses} customerId={matchingCustomerId} onSelectCustomer={setMatchingCustomerId} onOpenNurse={openNurse} onParse={()=>{setSelectedId(matchingCustomerId);setDemandOpen(true)}} onRecommend={recommend} onLock={lock}/>} 
+      {view==='matching'&&<MatchingView customers={customers} nurses={nurses} media={media} customerId={matchingCustomerId} onSelectCustomer={setMatchingCustomerId} onOpenNurse={openNurse} onParse={()=>{setSelectedId(matchingCustomerId);setDemandOpen(true)}} onRecommend={recommend} onLock={lock}/>}
       {view==='settings'&&<SettingsView onReset={reset}/>} 
     </AppShell>
     <NewCustomerSheet open={customerSheetOpen} onOpenChange={setCustomerSheetOpen} onSave={saveCustomer}/>
