@@ -31,11 +31,14 @@ yarn-error.log*
 
 # local environment
 .env*
+!.env.example
 
 # deployment and generated files
 .vercel
 next-env.d.ts
 /dist/
+/dist-production/
+/backend/dist/
 /.wrangler/
 /outputs/
 /work/

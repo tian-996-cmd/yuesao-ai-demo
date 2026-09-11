@@ -1,0 +1,53 @@
+name: Production V1 CI
+
+on:
+  push:
+    branches: [main, codex/production-v1]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: jiazheng_test
+          POSTGRES_USER: jiazheng
+          POSTGRES_PASSWORD: ci-only-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U jiazheng -d jiazheng_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+    env:
+      APP_ENV: test
+      DATABASE_URL: postgresql://jiazheng:ci-only-password@127.0.0.1:5432/jiazheng_test
+      JWT_SECRET: ci-only-jwt-secret-with-more-than-32-characters
+      CORS_ORIGIN: http://localhost
+      BOOTSTRAP_ADMIN_USERNAME: admin
+      BOOTSTRAP_ADMIN_PASSWORD: demo2026
+      LOG_LEVEL: warn
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: npm run test:api
+      - run: npm run db:migrate
+      - run: npm run db:seed
+      - name: PostgreSQL API integration flow
+        shell: bash
+        run: |
+          node backend/dist/server.js > /tmp/jiazheng-api.log 2>&1 &
+          api_pid=$!
+          trap 'kill "$api_pid" 2>/dev/null || true; cat /tmp/jiazheng-api.log' EXIT
+          node backend/test/integration.mjs
+      - run: npm run build:production
+      - run: npm run build:pages
+      - run: npm run build

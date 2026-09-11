@@ -1,0 +1,4 @@
+ALTER TABLE "customers" ADD CONSTRAINT "customers_budget_range_check" CHECK ("customers"."budget_max" >= "customers"."budget_min");--> statement-breakpoint
+ALTER TABLE "service_orders" ADD CONSTRAINT "orders_date_range_check" CHECK ("service_orders"."end_date" >= "service_orders"."start_date");--> statement-breakpoint
+ALTER TABLE "service_orders" ADD CONSTRAINT "orders_price_nonnegative_check" CHECK ("service_orders"."price" >= 0);--> statement-breakpoint
+ALTER TABLE "service_schedules" ADD CONSTRAINT "schedules_time_range_check" CHECK ("service_schedules"."end_time" >= "service_schedules"."start_time");

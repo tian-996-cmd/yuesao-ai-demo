@@ -6,7 +6,8 @@ import { defineConfig } from 'vite';
 function githubPagesBase() {
   const repository = process.env.GITHUB_REPOSITORY?.split('/').at(-1);
 
-  if (!repository || repository.toLowerCase().endsWith('.github.io')) return '/';
+  if (!repository || repository.toLowerCase().endsWith('.github.io'))
+    return '/';
   return `/${repository}/`;
 }
 
@@ -21,6 +22,7 @@ export default defineConfig({
   },
   define: {
     'import.meta.env.VITE_GITHUB_PAGES': JSON.stringify('true'),
+    'import.meta.env.VITE_APP_MODE': JSON.stringify('demo'),
   },
   plugins: [react(), tailwindcss()],
   build: {
