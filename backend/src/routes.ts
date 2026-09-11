@@ -1,5 +1,15 @@
 import type { FastifyInstance, FastifyRequest } from 'fastify';
-import { and, desc, eq, ilike, isNull, ne, or, sql } from 'drizzle-orm';
+import {
+  and,
+  desc,
+  eq,
+  ilike,
+  inArray,
+  isNull,
+  ne,
+  or,
+  sql,
+} from 'drizzle-orm';
 import type { Database } from './db/client.js';
 import {
   customers,
@@ -161,7 +171,7 @@ async function workerSchedules(db: Database, workerIds: string[]) {
     .where(
       and(
         isNull(serviceSchedules.deletedAt),
-        sql`${serviceSchedules.workerId} = ANY(${workerIds}::uuid[])`,
+        inArray(serviceSchedules.workerId, workerIds),
       ),
     )
     .orderBy(serviceSchedules.startTime);
