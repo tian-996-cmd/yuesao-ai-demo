@@ -37,10 +37,27 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
+      - name: Verify PostgreSQL starts with an empty public schema
+        shell: bash
+        run: |
+          node --input-type=module <<'NODE'
+          import assert from 'node:assert/strict';
+          import pg from 'pg';
+          const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
+          await client.connect();
+          try {
+            const result = await client.query("select count(*)::int as count from pg_tables where schemaname = 'public'");
+            assert.equal(result.rows[0].count, 0);
+          } finally {
+            await client.end();
+          }
+          NODE
       - run: npx tsc --noEmit
       - run: npm run test:api
       - run: npm run db:migrate
       - run: npm run db:seed
+      - name: Verify seed is idempotent
+        run: npm run db:seed
       - name: PostgreSQL API integration flow
         shell: bash
         run: |
@@ -51,3 +68,7 @@ jobs:
       - run: npm run build:production
       - run: npm run build:pages
       - run: npm run build
+      - name: Vercel compatibility build
+        run: npm run build:vercel
+        env:
+          VERCEL: 1
