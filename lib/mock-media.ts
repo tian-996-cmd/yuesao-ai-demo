@@ -1,13 +1,14 @@
 import type {MediaAsset,MediaCategory,MediaVisibility} from './media-types';
+import {assetUrl} from './asset-url';
 
 const paths={
-  zhang:['/demo-media/zhang-profile.webp','/demo-media/zhang-profile-thumb.webp'],
-  li:['/demo-media/li-profile.webp','/demo-media/li-profile-thumb.webp'],
-  candidate:['/demo-media/candidate-profile.webp','/demo-media/candidate-profile-thumb.webp'],
-  breakfast:['/demo-media/meal-breakfast.webp','/demo-media/meal-breakfast-thumb.webp'],
-  lunch:['/demo-media/meal-lunch.webp','/demo-media/meal-lunch-thumb.webp'],
-  dinner:['/demo-media/meal-dinner.webp','/demo-media/meal-dinner-thumb.webp'],
-  service:['/demo-media/service-supplies.webp','/demo-media/service-supplies-thumb.webp']
+  zhang:[assetUrl('/demo-media/zhang-profile.webp'),assetUrl('/demo-media/zhang-profile-thumb.webp')],
+  li:[assetUrl('/demo-media/li-profile.webp'),assetUrl('/demo-media/li-profile-thumb.webp')],
+  candidate:[assetUrl('/demo-media/candidate-profile.webp'),assetUrl('/demo-media/candidate-profile-thumb.webp')],
+  breakfast:[assetUrl('/demo-media/meal-breakfast.webp'),assetUrl('/demo-media/meal-breakfast-thumb.webp')],
+  lunch:[assetUrl('/demo-media/meal-lunch.webp'),assetUrl('/demo-media/meal-lunch-thumb.webp')],
+  dinner:[assetUrl('/demo-media/meal-dinner.webp'),assetUrl('/demo-media/meal-dinner-thumb.webp')],
+  service:[assetUrl('/demo-media/service-supplies.webp'),assetUrl('/demo-media/service-supplies-thumb.webp')]
 } as const;
 
 const asset=(id:string,nurseId:string,category:MediaCategory,title:string,path:keyof typeof paths,sortOrder:number,extra:Partial<MediaAsset>={}):MediaAsset=>({id,nurseId,category,title,url:paths[path][0],thumbnailUrl:paths[path][1],visibility:'customer_shareable' as MediaVisibility,consentStatus:category==='service_case'?'confirmed':'not_required',sortOrder,createdAt:'2026-06-18T10:00:00.000Z',...extra});

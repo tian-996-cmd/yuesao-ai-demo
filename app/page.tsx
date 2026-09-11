@@ -22,12 +22,13 @@ import type { MediaAsset, MediaUploadMetadata } from '@/lib/media-types';
 import type { MaternityNurse, NurseFormInput, NurseStatus } from '@/lib/nurse-types';
 import type { Customer, DemandProfile, NewCustomerInput } from '@/lib/types';
 import { addDays } from '@/lib/v3-engine';
+import { currentDemoPath, isGitHubPagesBuild, parseDemoRoute, pushDemoPath } from '@/lib/demo-routing';
 import { customerService } from '@/services/customer-service';
 import { nurseService } from '@/services/nurse-service';
 import { mediaService } from '@/services/media-service';
 
 export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
-  const [loggedIn,setLoggedIn] = useState(false);
+  const [loggedIn,setLoggedIn] = useState(()=>typeof window!=='undefined'&&isGitHubPagesBuild&&sessionStorage.getItem('yuesao-demo-pages-login')==='1');
   const [view,setView] = useState<ViewName>(initialView);
   const [customers,setCustomers] = useState<Customer[]>(mockCustomers);
   const [nurses,setNurses] = useState<MaternityNurse[]>(mockNurses);
@@ -44,16 +45,34 @@ export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
   const [followupOpen,setFollowupOpen] = useState(false);
   const [matchingCustomerId,setMatchingCustomerId] = useState('wang');
 
-  useEffect(()=>{setCustomers(customerService.load());setNurses(nurseService.load());void mediaService.listAll().then(setMedia);const parts=window.location.pathname.split('/').filter(Boolean);if(parts[0]==='nurses'&&parts[1])setSelectedNurseId(parts[1]);if(parts[0]==='customers'&&parts[1])setSelectedId(parts[1])},[]);
+  useEffect(()=>{
+    setCustomers(customerService.load());
+    setNurses(nurseService.load());
+    void mediaService.listAll().then(setMedia);
+    const syncRoute=()=>{
+      const route=parseDemoRoute(currentDemoPath());
+      setView(route.view);
+      if(route.nurseId)setSelectedNurseId(route.nurseId);
+      if(route.customerId)setSelectedId(route.customerId);
+      setFocusNurseId(route.focusNurseId);
+    };
+    syncRoute();
+    window.addEventListener('popstate',syncRoute);
+    window.addEventListener('hashchange',syncRoute);
+    return()=>{
+      window.removeEventListener('popstate',syncRoute);
+      window.removeEventListener('hashchange',syncRoute);
+    };
+  },[]);
   const showMessage=(text:string)=>{setMessage(text);window.setTimeout(()=>setMessage(''),2600)};
   const persistCustomers=(next:Customer[])=>{setCustomers(next);customerService.save(next)};
   const persistNurses=(next:MaternityNurse[])=>{setNurses(next);nurseService.save(next)};
   const pathFor=(next:ViewName)=>next==='dashboard'?'/' : next==='customers'?'/customers' : next==='nurses'?'/nurses' : next==='schedule'?'/schedule' : next==='matching'?'/matching' : next==='settings'?'/settings' : window.location.pathname;
-  const navigate=(next:ViewName)=>{setView(next);window.history.pushState({},'',pathFor(next));window.scrollTo(0,0)};
-  const openCustomer=(id:string)=>{setSelectedId(id);setView('detail');window.history.pushState({},'',`/customers/${id}`);window.scrollTo(0,0)};
-  const openNurse=(id:string)=>{setSelectedNurseId(id);setView('nurseDetail');window.history.pushState({},'',`/nurses/${id}`);window.scrollTo(0,0)};
-  const openSchedule=(id?:string)=>{setFocusNurseId(id);setView('schedule');window.history.pushState({},'',id?`/schedule?nurse=${id}`:'/schedule');window.scrollTo(0,0)};
-  const openMatching=(id?:string)=>{if(id)setMatchingCustomerId(id);setView('matching');window.history.pushState({},'','/matching');window.scrollTo(0,0)};
+  const navigate=(next:ViewName)=>{setView(next);pushDemoPath(pathFor(next));window.scrollTo(0,0)};
+  const openCustomer=(id:string)=>{setSelectedId(id);setView('detail');pushDemoPath(`/customers/${id}`);window.scrollTo(0,0)};
+  const openNurse=(id:string)=>{setSelectedNurseId(id);setView('nurseDetail');pushDemoPath(`/nurses/${id}`);window.scrollTo(0,0)};
+  const openSchedule=(id?:string)=>{setFocusNurseId(id);setView('schedule');pushDemoPath(id?`/schedule?nurse=${id}`:'/schedule');window.scrollTo(0,0)};
+  const openMatching=(id?:string)=>{if(id)setMatchingCustomerId(id);setView('matching');pushDemoPath('/matching');window.scrollTo(0,0)};
   const notify=(name:string)=>showMessage(`${name}已记录在演示流程中`);
   const saveCustomer=(input:NewCustomerInput)=>{const item:Customer={...input,id:`local-${Date.now()}`,phone:input.phone.replace(/(\d{3})\d+(\d{4})/,'$1****$2'),family:'待补充家庭情况。',requirements:[],exclusions:[],status:'新客户',recommendedCount:0,consultant:'王敏',lastFollowUp:'刚刚',followUps:[{time:'刚刚',content:'新建客户档案。'}]};persistCustomers([item,...customers]);showMessage('客户已保存到本地列表')};
   const saveNurse=(input:NurseFormInput)=>{
@@ -85,19 +104,19 @@ export function DemoApp({initialView='dashboard'}:{initialView?:ViewName}) {
     return()=>lifecycle.abort();
   },[customers,nurses]);
 
-  if(!loggedIn) return <LoginView onLogin={()=>setLoggedIn(true)}/>;
+  if(!loggedIn) return <LoginView onLogin={()=>{if(isGitHubPagesBuild)sessionStorage.setItem('yuesao-demo-pages-login','1');setLoggedIn(true)}}/>;
   const selected=customers.find(c=>c.id===selectedId) ?? customers[0];
   const selectedNurse=nurses.find(n=>n.id===selectedNurseId) ?? nurses[0];
   return <>
     <AppShell view={view} onNavigate={navigate} onSoon={notify}>
-      {view==='dashboard'&&<DashboardView customers={customers} nurses={nurses} onOpenCustomer={openCustomer} onCreateCustomer={()=>setCustomerSheetOpen(true)} onMatching={openMatching} onSchedule={()=>openSchedule('nurse_002')} onParse={id=>{setSelectedId(id);setDemandOpen(true)}}/>} 
-      {view==='customers'&&<CustomersView customers={customers} onOpen={openCustomer} onCreate={()=>setCustomerSheetOpen(true)} onMatch={openMatching}/>} 
-      {view==='detail'&&<CustomerDetailView customer={selected} nurses={nurses} onBack={()=>navigate('customers')} onFollow={()=>setFollowupOpen(true)} onParse={()=>setDemandOpen(true)} onMatch={()=>openMatching(selected.id)} onOpenNurse={openNurse}/>} 
+      {view==='dashboard'&&<DashboardView customers={customers} nurses={nurses} media={media} onOpenCustomer={openCustomer} onCreateCustomer={()=>setCustomerSheetOpen(true)} onMatching={openMatching} onSchedule={()=>openSchedule('nurse_002')} onParse={id=>{setSelectedId(id);setDemandOpen(true)}}/>}
+      {view==='customers'&&<CustomersView customers={customers} onOpen={openCustomer} onCreate={()=>setCustomerSheetOpen(true)} onMatch={openMatching}/>}
+      {view==='detail'&&<CustomerDetailView customer={selected} nurses={nurses} media={media} onBack={()=>navigate('customers')} onFollow={()=>setFollowupOpen(true)} onParse={()=>setDemandOpen(true)} onMatch={()=>openMatching(selected.id)} onOpenNurse={openNurse}/>}
       {view==='nurses'&&<NursesView nurses={nurses} media={media} initialFilter={nurseFilter} onOpen={openNurse} onCreate={()=>{setEditingNurse(undefined);setNurseSheetOpen(true)}}/>}
       {view==='nurseDetail'&&<NurseDetailView nurse={selectedNurse} media={media} onBack={()=>navigate('nurses')} onEdit={()=>{setEditingNurse(selectedNurse);setNurseSheetOpen(true)}} onSchedule={()=>openSchedule(selectedNurse.id)} onRecommend={()=>openMatching()} onAddSchedule={addNurseSchedule} onUpload={uploadMedia} onDeleteMedia={deleteMedia} onUpdateMedia={updateMedia} onSetAvatar={setAvatar}/>}
-      {view==='schedule'&&<ScheduleView nurses={nurses} customers={customers} focusNurseId={focusNurseId} onOpenNurse={openNurse} onOpenCustomer={openCustomer}/>} 
+      {view==='schedule'&&<ScheduleView nurses={nurses} customers={customers} media={media} focusNurseId={focusNurseId} onOpenNurse={openNurse} onOpenCustomer={openCustomer}/>}
       {view==='matching'&&<MatchingView customers={customers} nurses={nurses} media={media} customerId={matchingCustomerId} onSelectCustomer={setMatchingCustomerId} onOpenNurse={openNurse} onParse={()=>{setSelectedId(matchingCustomerId);setDemandOpen(true)}} onRecommend={recommend} onLock={lock}/>}
-      {view==='settings'&&<SettingsView onReset={reset}/>} 
+      {view==='settings'&&<SettingsView onReset={reset}/>}
     </AppShell>
     <NewCustomerSheet open={customerSheetOpen} onOpenChange={setCustomerSheetOpen} onSave={saveCustomer}/>
     <NurseFormSheet open={nurseSheetOpen} onOpenChange={x=>{setNurseSheetOpen(x);if(!x)setEditingNurse(undefined)}} onSave={saveNurse} editing={editingNurse}/>

@@ -1,0 +1,17 @@
+@import '../app/globals.css';
+@import '../app/v3.css';
+
+@source '../app';
+@source '../components';
+
+@media (max-width: 760px) {
+  .new-customer-sheet {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    max-width: none !important;
+    height: 100dvh !important;
+    max-height: 100dvh !important;
+    z-index: 50;
+  }
+}

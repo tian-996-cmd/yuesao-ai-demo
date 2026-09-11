@@ -23,7 +23,7 @@ export function AppShell({ children, view, onNavigate, onSoon }: { children: Rea
       <aside className="sidebar">
         <div className="sidebar-brand"><div className="brand-mark"><HeartHandshake /></div><div><strong>月嫂 AI</strong><span>业务助手</span></div></div>
         <nav aria-label="主导航">
-          {desktopItems.map((item) => <button key={item.label} className={active === item.view ? 'active' : ''} onClick={() => onNavigate(item.view)}><item.icon />{item.label}{item.label === 'AI 匹配' && <span className="nav-badge">AI</span>}</button>)}
+          {desktopItems.map((item) => <button key={item.label} className={active === item.view && item.label !== '跟进' ? 'active' : ''} onClick={() => onNavigate(item.view)}><item.icon />{item.label}{item.label === 'AI 匹配' && <span className="nav-badge">AI</span>}</button>)}
         </nav>
         <div className="sidebar-bottom">
           <button className={active === 'settings' ? 'active' : ''} onClick={() => onNavigate('settings')}><Settings />设置</button>

@@ -5,6 +5,7 @@ import './v3.css';
 export const metadata: Metadata = {
   title: '月嫂 AI 业务助手',
   description: '面向月嫂公司与母婴服务机构的客户业务工作台 Demo',
+  icons: { icon: '/favicon.svg' },
 };
 
 export default function RootLayout({
