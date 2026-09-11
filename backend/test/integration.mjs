@@ -42,7 +42,7 @@ await waitForApi();
 const schemaState = await queryDb(`
   select
     exists(select 1 from pg_extension where extname = 'btree_gist') as has_btree_gist,
-    (select array_agg(tablename order by tablename)
+    (select json_agg(tablename order by tablename)
       from pg_tables
       where schemaname = 'public'
         and tablename in ('roles', 'users', 'customers', 'service_workers', 'service_orders', 'service_schedules')) as tables,
