@@ -322,17 +322,17 @@ const untouchedCustomerB = await request(
 );
 assert.equal(untouchedCustomerB.status, 200);
 assert.equal(untouchedCustomerB.body.item.remark, '集成测试客户');
-const workerPayload = (name) => ({
+const workerPayload = (name, hometown = '陕西', skills = ['老人照护']) => ({
   name,
   phone: '13900000000',
   age: 40,
-  hometown: '陕西',
+  hometown,
   currentCity: '西安',
   serviceLevel: '高级',
   experienceYears: 8,
   serviceCount: 20,
   serviceArea: ['西安'],
-  skills: ['老人照护'],
+  skills,
   personalityTags: ['耐心'],
   specialExperienceTags: [],
   status: '空档',
@@ -352,10 +352,16 @@ const workerA = await request('/workers', {
 const workerB = await request('/workers', {
   token,
   method: 'POST',
-  body: JSON.stringify(workerPayload(`人员B-${stamp}`)),
+  body: JSON.stringify(workerPayload(`人员B-${stamp}`, '山西', ['月子餐'])),
+});
+const workerC = await request('/workers', {
+  token,
+  method: 'POST',
+  body: JSON.stringify(workerPayload(`人员C-${stamp}`, '陕西', ['月子餐'])),
 });
 assert.equal(workerA.status, 201);
 assert.equal(workerB.status, 201);
+assert.equal(workerC.status, 201);
 assert.notEqual(workerA.body.item.id, workerB.body.item.id);
 const updatedWorkerA = await request(`/workers/${workerA.body.item.id}`, {
   token,
@@ -379,6 +385,123 @@ for (const term of [`人员A-${stamp}`, `人员A`, '  陕西  ', '老人照护']
     `worker search must match ${term}`,
   );
 }
+const testWorkerIds = new Set([
+  workerA.body.item.id,
+  workerB.body.item.id,
+  workerC.body.item.id,
+]);
+const createdMatches = async (term) => {
+  const result = await request(`/workers?q=${encodeURIComponent(term)}`, {
+    token,
+  });
+  return result.body.items.filter((item) => testWorkerIds.has(item.id));
+};
+assert.deepEqual(
+  (await createdMatches('陕西')).map((item) => item.name).sort(),
+  [`人员A-${stamp}`, `人员C-${stamp}`].sort(),
+);
+assert.deepEqual(
+  (await createdMatches('月子餐')).map((item) => item.name).sort(),
+  [`人员B-${stamp}`, `人员C-${stamp}`].sort(),
+);
+assert.deepEqual(
+  (await createdMatches(`员C-${stamp}`)).map((item) => item.id),
+  [workerC.body.item.id],
+);
+const shaanxiAndCooking = (await createdMatches('陕西')).filter((item) =>
+  item.skillTags.includes('月子餐'),
+);
+assert.deepEqual(
+  shaanxiAndCooking.map((item) => item.id),
+  [workerC.body.item.id],
+);
+const currentlyAvailableCooking = (await createdMatches('月子餐')).filter(
+  (item) => item.availability.currentAvailable,
+);
+assert.deepEqual(
+  currentlyAvailableCooking.map((item) => item.name).sort(),
+  [`人员B-${stamp}`, `人员C-${stamp}`].sort(),
+);
+
+for (const [startTime, endTime] of [
+  ['2027-09-30', '2027-10-25'],
+  ['2027-11-05', '2027-11-20'],
+]) {
+  const slot = await request('/schedules', {
+    token,
+    method: 'POST',
+    body: JSON.stringify({
+      workerId: workerC.body.item.id,
+      startTime,
+      endTime,
+      status: 'confirmed',
+      remark: '订单修改边界测试',
+    }),
+  });
+  assert.equal(slot.status, 201);
+}
+const lockedByName = await createdMatches(`人员C-${stamp}`);
+assert.equal(lockedByName.length, 1);
+assert.equal(lockedByName[0].availability.locked, true);
+const boundaryOrder = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    customerId: customerB.body.item.id,
+    workerId: workerC.body.item.id,
+    serviceType: '边界测试',
+    status: 'pending',
+    startDate: '2027-10-25',
+    endDate: '2027-10-30',
+    price: 0,
+    remark: '订单边界测试',
+  }),
+});
+assert.equal(boundaryOrder.status, 201);
+assert.equal(
+  (
+    await request(`/orders/${boundaryOrder.body.item.id}`, {
+      token,
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'confirmed' }),
+    })
+  ).status,
+  409,
+);
+assert.equal(
+  (
+    await request(`/orders/${boundaryOrder.body.item.id}`, {
+      token,
+      method: 'PATCH',
+      body: JSON.stringify({
+        status: 'confirmed',
+        startDate: '2027-10-26',
+        endDate: '2027-11-04',
+      }),
+    })
+  ).status,
+  200,
+);
+assert.equal(
+  (
+    await request(`/orders/${boundaryOrder.body.item.id}`, {
+      token,
+      method: 'PATCH',
+      body: JSON.stringify({ endDate: '2027-11-05' }),
+    })
+  ).status,
+  409,
+);
+assert.equal(
+  (
+    await request(`/orders/${boundaryOrder.body.item.id}`, {
+      token,
+      method: 'PATCH',
+      body: JSON.stringify({ status: 'cancelled' }),
+    })
+  ).status,
+  200,
+);
 const orderPayload = {
   customerId: customerA.body.item.id,
   workerId: workerA.body.item.id,

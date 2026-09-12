@@ -52,3 +52,18 @@ test('continuous schedules and cancellation/completion are handled consistently'
   assert.equal(value.nextAvailableDate, '2026-10-26');
   assert.equal(addCalendarDays('2026-12-31', 1), '2027-01-01');
 });
+
+test('7-day and 30-day windows include immediately available workers and use next availability', () => {
+  const today = '2026-09-12';
+  const immediate = deriveAvailability([], today).nextAvailableDate;
+  const inEightDays = deriveAvailability(
+    [slot('2026-09-12', '2026-09-19')],
+    today,
+  ).nextAvailableDate;
+  const daysUntil = (day) =>
+    (Date.parse(`${day}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) /
+    86400000;
+  assert.equal(daysUntil(immediate) <= 7, true);
+  assert.equal(daysUntil(inEightDays) <= 7, false);
+  assert.equal(daysUntil(inEightDays) <= 30, true);
+});
