@@ -1,9 +1,100 @@
-export type NurseStatus = '空档' | '即将空档' | '已锁档' | '上户中' | '休息' | '不可接单';
-export type ScheduleStatus = '空档' | '已推荐' | '已锁档' | '上户中' | '休息' | '不可接单';
+export type NurseStatus =
+  | '空档'
+  | '即将空档'
+  | '已锁档'
+  | '上户中'
+  | '休息'
+  | '不可接单';
+export type ScheduleStatus =
+  | '空档'
+  | '已推荐'
+  | '已锁档'
+  | '上户中'
+  | '休息'
+  | '不可接单';
 
-export interface NurseRatings { overall:number; newbornCare:number; postpartumCare:number; cooking:number; communication:number; boundarySense:number; nightCare:number; }
-export interface ServiceHistory { id:string; customerId:string; month:string; city:string; familyType:string; days:number; highlights:string[]; rating:number; }
-export interface NurseReview { id:string; customerId:string; date:string; rating:number; content:string; }
-export interface NurseSchedule { id:string; nurseId:string; start:string; end:string; status:ScheduleStatus; customerId?:string; customerName?:string; city?:string; note?:string; }
-export interface MaternityNurse { id:string; name:string; phone:string; age:number; hometown:string; currentCity:string; grade?:'金牌'|'资深'|'高级'|'专业'; experienceYears:number; serviceCount:number; price26Days:number; introduction:string; status:NurseStatus; availableFrom:string; skillTags:string[]; personalityTags:string[]; specialExperienceTags:string[]; ratings:NurseRatings; serviceHistory:ServiceHistory[]; reviews:NurseReview[]; schedule:NurseSchedule[]; }
-export type NurseFormInput = Pick<MaternityNurse,'name'|'phone'|'age'|'hometown'|'currentCity'|'experienceYears'|'serviceCount'|'price26Days'|'introduction'|'availableFrom'|'skillTags'|'personalityTags'>;
+export interface NurseRatings {
+  overall: number;
+  newbornCare: number;
+  postpartumCare: number;
+  cooking: number;
+  communication: number;
+  boundarySense: number;
+  nightCare: number;
+}
+export interface ServiceHistory {
+  id: string;
+  customerId: string;
+  month: string;
+  city: string;
+  familyType: string;
+  days: number;
+  highlights: string[];
+  rating: number;
+}
+export interface NurseReview {
+  id: string;
+  customerId: string;
+  date: string;
+  rating: number;
+  content: string;
+}
+export interface NurseSchedule {
+  id: string;
+  nurseId: string;
+  orderId?: string | null;
+  sourceType?: 'order' | 'manual';
+  rawStatus?: string;
+  start: string;
+  end: string;
+  status: ScheduleStatus;
+  customerId?: string;
+  customerName?: string;
+  city?: string;
+  note?: string;
+}
+export interface NurseAvailability {
+  currentDate: string;
+  currentAvailable: boolean;
+  inService: boolean;
+  locked: boolean;
+  nextAvailableDate: string;
+}
+export interface MaternityNurse {
+  id: string;
+  name: string;
+  phone: string;
+  age: number;
+  hometown: string;
+  currentCity: string;
+  grade?: '金牌' | '资深' | '高级' | '专业';
+  experienceYears: number;
+  serviceCount: number;
+  price26Days: number;
+  introduction: string;
+  status: NurseStatus;
+  availableFrom: string;
+  availability?: NurseAvailability;
+  skillTags: string[];
+  personalityTags: string[];
+  specialExperienceTags: string[];
+  ratings: NurseRatings;
+  serviceHistory: ServiceHistory[];
+  reviews: NurseReview[];
+  schedule: NurseSchedule[];
+}
+export type NurseFormInput = Pick<
+  MaternityNurse,
+  | 'name'
+  | 'phone'
+  | 'age'
+  | 'hometown'
+  | 'currentCity'
+  | 'experienceYears'
+  | 'serviceCount'
+  | 'price26Days'
+  | 'introduction'
+  | 'availableFrom'
+  | 'skillTags'
+  | 'personalityTags'
+>;

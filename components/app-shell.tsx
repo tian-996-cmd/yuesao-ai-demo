@@ -46,11 +46,13 @@ export function AppShell({
   view,
   onNavigate,
   onSoon,
+  currentDate,
 }: {
   children: ReactNode;
   view: ViewName;
   onNavigate: (view: ViewName) => void;
   onSoon: (name: string) => void;
+  currentDate: string;
 }) {
   const [assistant, setAssistant] = useState(false);
   const active =
@@ -111,7 +113,14 @@ export function AppShell({
             <strong>月嫂 AI</strong>
           </div>
           <div className="topbar-date">
-            <CalendarDays /> 2026年9月7日 · 星期一
+            <CalendarDays />{' '}
+            {new Intl.DateTimeFormat('zh-CN', {
+              timeZone: 'Asia/Shanghai',
+              year: 'numeric',
+              month: 'long',
+              day: 'numeric',
+              weekday: 'long',
+            }).format(new Date(`${currentDate}T00:00:00+08:00`))}
           </div>
           <button
             className="ai-helper-button"

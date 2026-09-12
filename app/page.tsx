@@ -16,6 +16,10 @@ import { NursesView } from '@/components/nurses-view';
 import { OrderFormSheet } from '@/components/order-form-sheet';
 import { OrdersView } from '@/components/orders-view';
 import { ScheduleView } from '@/components/schedule-view';
+import {
+  ScheduleFormSheet,
+  type ManualScheduleInput,
+} from '@/components/schedule-form-sheet';
 import { SettingsView } from '@/components/settings-view';
 import { mockCustomers } from '@/lib/mock-data';
 import { mockNurses } from '@/lib/mock-nurses';
@@ -29,7 +33,7 @@ import type {
 } from '@/lib/nurse-types';
 import type { NewOrderInput, ServiceOrder } from '@/lib/order-types';
 import type { Customer, DemandProfile, NewCustomerInput } from '@/lib/types';
-import { addDays } from '@/lib/v3-engine';
+import { addDays, DEMO_TODAY } from '@/lib/v3-engine';
 import {
   currentDemoPath,
   isGitHubPagesBuild,
@@ -69,17 +73,24 @@ export function DemoApp({
   const [orders, setOrders] = useState<ServiceOrder[]>(
     isProductionMode ? [] : mockOrders,
   );
-  const [media, setMedia] = useState<MediaAsset[]>(mockMediaAssets);
+  const [media, setMedia] = useState<MediaAsset[]>(
+    isProductionMode ? [] : mockMediaAssets,
+  );
+  const [currentDate, setCurrentDate] = useState(
+    isProductionMode ? '' : DEMO_TODAY.toISOString().slice(0, 10),
+  );
   const [selectedId, setSelectedId] = useState('wang'),
     [selectedNurseId, setSelectedNurseId] = useState('nurse_001');
   const [nurseFilter] = useState<NurseStatus>();
   const [focusNurseId, setFocusNurseId] = useState<string>();
   const [customerSheetOpen, setCustomerSheetOpen] = useState(false),
     [nurseSheetOpen, setNurseSheetOpen] = useState(false),
-    [orderSheetOpen, setOrderSheetOpen] = useState(false);
+    [orderSheetOpen, setOrderSheetOpen] = useState(false),
+    [scheduleSheetOpen, setScheduleSheetOpen] = useState(false);
   const [editingNurse, setEditingNurse] = useState<MaternityNurse>();
   const [editingCustomer, setEditingCustomer] = useState<Customer>();
   const [editingOrder, setEditingOrder] = useState<ServiceOrder>();
+  const [presetOrderWorkerId, setPresetOrderWorkerId] = useState<string>();
   const [message, setMessage] = useState(''),
     [demandOpen, setDemandOpen] = useState(false),
     [followupOpen, setFollowupOpen] = useState(false),
@@ -97,6 +108,7 @@ export function DemoApp({
       setCustomers(data.customers);
       setNurses(data.nurses);
       setOrders(data.orders);
+      setCurrentDate(data.context.currentDate);
       setSelectedId((x) =>
         data.customers.some((c) => c.id === x)
           ? x
@@ -129,7 +141,7 @@ export function DemoApp({
     syncRoute();
     window.addEventListener('popstate', syncRoute);
     window.addEventListener('hashchange', syncRoute);
-    void mediaService.listAll().then(setMedia);
+    if (!isProductionMode) void mediaService.listAll().then(setMedia);
     if (isProductionMode) {
       if (!tokenStore.get()) {
         setAuthChecking(false);
@@ -347,7 +359,6 @@ export function DemoApp({
         const collision = worker.schedule.some(
           (x) =>
             x.status !== '空档' &&
-            x.status !== '休息' &&
             x.start <= input.endDate &&
             x.end >= input.startDate,
         );
@@ -373,6 +384,8 @@ export function DemoApp({
                       nurseId: n.id,
                       customerId: customer?.id,
                       customerName: customer?.name,
+                      sourceType: 'order',
+                      rawStatus: input.status,
                       start: input.startDate,
                       end: input.endDate,
                       status: '已锁档',
@@ -482,7 +495,7 @@ export function DemoApp({
               ? {
                   ...n,
                   status: '已锁档',
-                  availableFrom: addDays(end, 4),
+                  availableFrom: addDays(end, 1),
                   schedule: [
                     ...n.schedule,
                     {
@@ -491,6 +504,8 @@ export function DemoApp({
                       customerId: customer.id,
                       customerName: customer.name,
                       city: customer.city,
+                      sourceType: 'order',
+                      rawStatus: 'confirmed',
                       start: customer.dueDate,
                       end,
                       status: '已锁档',
@@ -507,46 +522,48 @@ export function DemoApp({
       showMessage(e instanceof Error ? e.message : '锁定失败');
     }
   };
-  const addNurseSchedule = async () => {
-    if (!selectedNurse) return;
-    const start = selectedNurse.availableFrom,
-      end = addDays(start, 25);
+  const saveManualSchedule = async (input: ManualScheduleInput) => {
     try {
       if (isProductionMode) {
-        await productionApi.createSchedule({
-          workerId: selectedNurse.id,
-          startTime: start,
-          endTime: end,
-          status: 'confirmed',
-          remark: '顾问新增档期',
-        });
+        await productionApi.createSchedule(input);
         await loadProduction();
-      } else
+      } else {
+        const worker = nurses.find((n) => n.id === input.workerId);
+        if (!worker) throw new Error('未找到服务人员');
+        const collision = worker.schedule.some(
+          (x) =>
+            x.status !== '空档' &&
+            x.start <= input.endTime &&
+            x.end >= input.startTime,
+        );
+        if (collision) throw new Error('该人员当前时间段已有服务安排。');
         persistNurses(
           nurses.map((n) =>
-            n.id === selectedNurse.id
+            n.id === input.workerId
               ? {
                   ...n,
-                  status: '已锁档',
-                  availableFrom: addDays(end, 4),
                   schedule: [
                     ...n.schedule,
                     {
                       id: crypto.randomUUID(),
                       nurseId: n.id,
-                      start,
-                      end,
-                      status: '已锁档',
-                      note: '顾问新增档期',
+                      sourceType: 'manual' as const,
+                      rawStatus: input.status,
+                      start: input.startTime,
+                      end: input.endTime,
+                      status:
+                        input.status === 'confirmed' ? '已锁档' : input.status,
+                      note: input.remark,
                     },
                   ],
                 }
               : n,
           ),
         );
+      }
       showMessage('新档期已加入排期中心');
     } catch (e) {
-      showMessage(e instanceof Error ? e.message : '新增档期失败');
+      throw e instanceof Error ? e : new Error('新增档期失败');
     }
   };
   const uploadMedia = async (files: File[], metadata: MediaUploadMetadata) => {
@@ -683,7 +700,12 @@ export function DemoApp({
     return <main className="app-loading">正在加载业务数据…</main>;
   return (
     <>
-      <AppShell view={view} onNavigate={navigate} onSoon={notify}>
+      <AppShell
+        view={view}
+        currentDate={currentDate}
+        onNavigate={navigate}
+        onSoon={notify}
+      >
         {apiError && (
           <div className="api-banner" role="alert">
             {apiError}
@@ -695,6 +717,7 @@ export function DemoApp({
             customers={customers}
             nurses={nurses}
             media={media}
+            currentDate={currentDate}
             onOpenCustomer={openCustomer}
             onCreateCustomer={() => setCustomerSheetOpen(true)}
             onMatching={openMatching}
@@ -737,6 +760,7 @@ export function DemoApp({
           <NursesView
             nurses={nurses}
             media={media}
+            currentDate={currentDate}
             initialFilter={nurseFilter}
             onOpen={openNurse}
             onCreate={() => {
@@ -749,14 +773,19 @@ export function DemoApp({
           <NurseDetailView
             nurse={selectedNurse}
             media={media}
+            currentDate={currentDate}
             onBack={() => navigate('nurses')}
             onEdit={() => {
               setEditingNurse(selectedNurse);
               setNurseSheetOpen(true);
             }}
             onSchedule={() => openSchedule(selectedNurse.id)}
-            onRecommend={() => openMatching()}
-            onAddSchedule={() => void addNurseSchedule()}
+            onRecommend={() => {
+              setEditingOrder(undefined);
+              setPresetOrderWorkerId(selectedNurse.id);
+              setOrderSheetOpen(true);
+            }}
+            onAddSchedule={() => setScheduleSheetOpen(true)}
             onUpload={uploadMedia}
             onDeleteMedia={deleteMedia}
             onUpdateMedia={updateMedia}
@@ -782,6 +811,7 @@ export function DemoApp({
             nurses={nurses}
             customers={customers}
             media={media}
+            currentDate={currentDate}
             focusNurseId={focusNurseId}
             onOpenNurse={openNurse}
             onOpenCustomer={openCustomer}
@@ -828,18 +858,30 @@ export function DemoApp({
         }}
         onSave={saveNurse}
         editing={editingNurse}
+        currentDate={currentDate}
       />
       <OrderFormSheet
-        key={`${editingOrder?.id ?? 'new'}-${orderSheetOpen}`}
+        key={`${editingOrder?.id ?? 'new'}-${presetOrderWorkerId ?? 'none'}-${orderSheetOpen}`}
         open={orderSheetOpen}
         onOpenChange={(open) => {
           setOrderSheetOpen(open);
-          if (!open) setEditingOrder(undefined);
+          if (!open) {
+            setEditingOrder(undefined);
+            setPresetOrderWorkerId(undefined);
+          }
         }}
         customers={customers}
         nurses={nurses}
         onSave={saveOrder}
         editing={editingOrder}
+        presetWorkerId={presetOrderWorkerId}
+      />
+      <ScheduleFormSheet
+        open={scheduleSheetOpen}
+        onOpenChange={setScheduleSheetOpen}
+        worker={selectedNurse}
+        currentDate={currentDate}
+        onSave={saveManualSchedule}
       />
       {selected && (
         <>

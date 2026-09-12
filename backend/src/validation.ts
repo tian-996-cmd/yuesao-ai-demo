@@ -183,7 +183,6 @@ export const scheduleStatus = z.enum([
 ]);
 const scheduleFields = {
   workerId: uuid,
-  orderId: uuid.optional().nullable(),
   startTime: z.union([dateText, dateTimeText]),
   endTime: z.union([dateText, dateTimeText]),
   status: scheduleStatus.default('confirmed'),
@@ -198,7 +197,7 @@ export const scheduleUpdateInput = z
   .partial();
 
 export const listQuery = z.object({
-  q: z.string().max(100).optional(),
+  q: z.string().trim().max(100).optional(),
   status: z.string().max(40).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),

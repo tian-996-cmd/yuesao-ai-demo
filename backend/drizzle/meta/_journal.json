@@ -15,6 +15,13 @@
       "when": 1789132119088,
       "tag": "0001_breezy_vengeance",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789185600000,
+      "tag": "0002_schedule_source_consistency",
+      "breakpoints": true
     }
   ]
 }

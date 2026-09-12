@@ -213,6 +213,9 @@ export const serviceSchedules = pgTable(
     orderId: uuid('order_id').references(() => serviceOrders.id, {
       onDelete: 'restrict',
     }),
+    sourceType: varchar('source_type', { length: 20 })
+      .notNull()
+      .default('manual'),
     startTime: timestamp('start_time', { withTimezone: true }).notNull(),
     endTime: timestamp('end_time', { withTimezone: true }).notNull(),
     status: varchar('status', { length: 30 }).notNull().default('confirmed'),
@@ -226,9 +229,20 @@ export const serviceSchedules = pgTable(
       table.endTime,
     ),
     index('schedules_order_idx').on(table.orderId),
+    uniqueIndex('schedules_active_order_unique')
+      .on(table.orderId)
+      .where(sql`${table.deletedAt} IS NULL AND ${table.orderId} IS NOT NULL`),
     check(
       'schedules_time_range_check',
       sql`${table.endTime} >= ${table.startTime}`,
+    ),
+    check(
+      'schedules_source_type_check',
+      sql`${table.sourceType} IN ('order', 'manual')`,
+    ),
+    check(
+      'schedules_source_relation_check',
+      sql`(${table.sourceType} = 'order' AND ${table.orderId} IS NOT NULL) OR (${table.sourceType} = 'manual' AND ${table.orderId} IS NULL)`,
     ),
   ],
 );

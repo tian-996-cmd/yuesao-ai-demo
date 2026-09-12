@@ -15,10 +15,13 @@ import {
   SheetTitle,
 } from './ui/sheet';
 
-const emptyOrder = (customers: Customer[]): NewOrderInput => ({
+const emptyOrder = (
+  customers: Customer[],
+  presetWorkerId?: string,
+): NewOrderInput => ({
   customerId: customers[0]?.id ?? '',
-  workerId: null,
-  serviceType: '月嫂服务',
+  workerId: presetWorkerId ?? null,
+  serviceType: '家政服务',
   status: 'pending',
   startDate: '',
   endDate: '',
@@ -30,6 +33,7 @@ const emptyOrder = (customers: Customer[]): NewOrderInput => ({
 const orderFormValue = (
   customers: Customer[],
   editing?: ServiceOrder,
+  presetWorkerId?: string,
 ): NewOrderInput =>
   editing
     ? {
@@ -43,7 +47,7 @@ const orderFormValue = (
         remark: editing.remark,
         createSchedule: false,
       }
-    : emptyOrder(customers);
+    : emptyOrder(customers, presetWorkerId);
 
 export function OrderFormSheet({
   open,
@@ -52,6 +56,7 @@ export function OrderFormSheet({
   nurses,
   onSave,
   editing,
+  presetWorkerId,
 }: {
   open: boolean;
   onOpenChange: (x: boolean) => void;
@@ -59,9 +64,10 @@ export function OrderFormSheet({
   nurses: MaternityNurse[];
   onSave: (x: NewOrderInput) => Promise<void>;
   editing?: ServiceOrder;
+  presetWorkerId?: string;
 }) {
   const [form, setForm] = useState<NewOrderInput>(() =>
-      orderFormValue(customers, editing),
+      orderFormValue(customers, editing, presetWorkerId),
     ),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('');
@@ -71,6 +77,26 @@ export function OrderFormSheet({
   ) => setForm((previous) => ({ ...previous, [key]: value }));
   const submit = async (event: { preventDefault(): void }) => {
     event.preventDefault();
+    if (!form.customerId || !form.startDate || !form.endDate) {
+      setError('请完整填写客户和服务日期');
+      return;
+    }
+    if (!form.serviceType.trim()) {
+      setError('服务类型不能为空');
+      return;
+    }
+    if (form.endDate < form.startDate) {
+      setError('结束日期不能早于开始日期');
+      return;
+    }
+    if (!Number.isFinite(form.price) || form.price < 0) {
+      setError('服务费用不能小于 0');
+      return;
+    }
+    if ((form.remark?.length ?? 0) > 5000) {
+      setError('备注不能超过 5000 字');
+      return;
+    }
     setSaving(true);
     setError('');
     try {
@@ -135,6 +161,7 @@ export function OrderFormSheet({
                 id="order-service-type"
                 value={form.serviceType}
                 onChange={(event) => set('serviceType', event.target.value)}
+                maxLength={60}
                 required
               />
             </label>
@@ -191,6 +218,7 @@ export function OrderFormSheet({
                 id="order-remark"
                 value={form.remark ?? ''}
                 onChange={(event) => set('remark', event.target.value)}
+                maxLength={5000}
                 rows={4}
               />
             </label>

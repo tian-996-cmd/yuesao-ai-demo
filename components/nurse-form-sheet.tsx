@@ -14,7 +14,7 @@ import {
   SheetTitle,
 } from './ui/sheet';
 
-const blank: NurseFormInput = {
+const blank = (currentDate: string): NurseFormInput => ({
   name: '',
   phone: '',
   age: 40,
@@ -24,22 +24,24 @@ const blank: NurseFormInput = {
   serviceCount: 20,
   price26Days: 14000,
   introduction: '',
-  availableFrom: '2026-10-15',
+  availableFrom: currentDate,
   skillTags: ['新生儿护理'],
   personalityTags: ['温和'],
-};
+});
 export function NurseFormSheet({
   open,
   onOpenChange,
   onSave,
   editing,
+  currentDate,
 }: {
   open: boolean;
   onOpenChange: (x: boolean) => void;
   onSave: (x: NurseFormInput) => Promise<void> | void;
   editing?: MaternityNurse;
+  currentDate: string;
 }) {
-  const [form, setForm] = useState<NurseFormInput>(blank),
+  const [form, setForm] = useState<NurseFormInput>(() => blank(currentDate)),
     [saving, setSaving] = useState(false),
     [error, setError] = useState('');
   useEffect(() => {
@@ -60,11 +62,11 @@ export function NurseFormSheet({
               skillTags: editing.skillTags,
               personalityTags: editing.personalityTags,
             }
-          : blank,
+          : blank(currentDate),
       );
       setError('');
     }
-  }, [open, editing]);
+  }, [open, editing, currentDate]);
   const set = <K extends keyof NurseFormInput>(
     key: K,
     value: NurseFormInput[K],

@@ -7,6 +7,7 @@ import {
   inArray,
   isNull,
   ne,
+  notInArray,
   or,
   sql,
 } from 'drizzle-orm';
@@ -37,9 +38,14 @@ import {
   workerInput,
   workerUpdateInput,
 } from './validation.js';
+import { deriveAvailability, shanghaiToday } from './domain/availability.js';
 
-const shanghaiDate = (value: string) =>
+const shanghaiRangeStart = (value: string) =>
   value.length === 10 ? new Date(`${value}T00:00:00+08:00`) : new Date(value);
+const shanghaiRangeEnd = (value: string) =>
+  value.length === 10
+    ? new Date(`${value}T23:59:59.999+08:00`)
+    : new Date(value);
 const isoDay = (value: Date | string | null) =>
   value
     ? new Intl.DateTimeFormat('en-CA', {
@@ -104,6 +110,14 @@ function workerDto(
   row: typeof serviceWorkers.$inferSelect,
   schedules: Array<Record<string, unknown>> = [],
 ) {
+  const availability = deriveAvailability(
+    schedules.map((item) => ({
+      start: String(item.start),
+      end: String(item.end),
+      status: String(item.rawStatus),
+      sourceType: item.sourceType === 'order' ? 'order' : 'manual',
+    })),
+  );
   const ratings = Object.keys(row.ratings).length
     ? row.ratings
     : {
@@ -127,8 +141,16 @@ function workerDto(
     serviceCount: row.serviceCount,
     price26Days: row.salaryStandard,
     introduction: row.remark ?? '',
-    status: row.status,
-    availableFrom: row.availableFrom,
+    status:
+      row.status === 'disabled'
+        ? '不可接单'
+        : availability.inService
+          ? '上户中'
+          : availability.currentAvailable
+            ? '空档'
+            : '已锁档',
+    availableFrom: availability.nextAvailableDate,
+    availability,
     skillTags: row.skills,
     personalityTags: row.personalityTags,
     specialExperienceTags: row.specialExperienceTags,
@@ -145,7 +167,8 @@ function scheduleStatusForOrder(status: string) {
   if (status === 'in_service') return 'in_service' as const;
   if (status === 'completed') return 'completed' as const;
   if (status === 'cancelled') return 'cancelled' as const;
-  return 'confirmed' as const;
+  if (status === 'confirmed') return 'confirmed' as const;
+  return 'cancelled' as const;
 }
 
 function scheduleStatusForUi(status: string) {
@@ -162,6 +185,7 @@ async function workerSchedules(db: Database, workerIds: string[]) {
   const rows = await db
     .select({
       schedule: serviceSchedules,
+      customerId: customers.id,
       customerName: customers.name,
       city: customers.city,
     })
@@ -182,10 +206,13 @@ async function workerSchedules(db: Database, workerIds: string[]) {
       id: row.schedule.id,
       nurseId: row.schedule.workerId,
       orderId: row.schedule.orderId,
+      sourceType: row.schedule.sourceType,
       start: isoDay(row.schedule.startTime),
       end: isoDay(row.schedule.endTime),
       status: scheduleStatusForUi(row.schedule.status),
+      rawStatus: row.schedule.status,
       customerName: row.customerName,
+      customerId: row.customerId,
       city: row.city,
       note: row.schedule.remark,
     });
@@ -204,7 +231,7 @@ async function assertNoConflict(
   const clauses = [
     eq(serviceSchedules.workerId, workerId),
     isNull(serviceSchedules.deletedAt),
-    ne(serviceSchedules.status, 'cancelled'),
+    notInArray(serviceSchedules.status, ['cancelled', 'completed']),
     sql`${serviceSchedules.startTime} <= ${end}`,
     sql`${serviceSchedules.endTime} >= ${start}`,
   ];
@@ -222,6 +249,40 @@ async function assertNoConflict(
     );
 }
 
+async function assertActiveCustomer(db: Pick<Database, 'select'>, id: string) {
+  const [item] = await db
+    .select({ id: customers.id })
+    .from(customers)
+    .where(
+      and(
+        eq(customers.id, id),
+        isNull(customers.deletedAt),
+        ne(customers.status, 'disabled'),
+      ),
+    )
+    .limit(1);
+  if (!item) throw new AppError(400, 'INVALID_CUSTOMER', '客户不存在或已停用');
+}
+
+async function assertActiveWorker(db: Pick<Database, 'select'>, id: string) {
+  const [item] = await db
+    .select({ id: serviceWorkers.id })
+    .from(serviceWorkers)
+    .where(
+      and(
+        eq(serviceWorkers.id, id),
+        isNull(serviceWorkers.deletedAt),
+        ne(serviceWorkers.status, 'disabled'),
+      ),
+    )
+    .limit(1);
+  if (!item)
+    throw new AppError(400, 'INVALID_WORKER', '服务人员不存在或已停用');
+}
+
+const orderOccupiesSchedule = (status: string) =>
+  status === 'confirmed' || status === 'in_service';
+
 export async function registerRoutes(app: FastifyInstance, db: Database) {
   app.get('/health', async () => {
     await db.execute(sql`select 1`);
@@ -231,6 +292,11 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
       time: new Date().toISOString(),
     };
   });
+
+  app.get('/api/v1/context', { preHandler: [app.authenticate] }, async () => ({
+    currentDate: shanghaiToday(),
+    timeZone: 'Asia/Shanghai',
+  }));
 
   app.post('/api/v1/auth/login', async (request, reply) => {
     const input = loginInput.parse(request.body);
@@ -474,6 +540,8 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
               ilike(serviceWorkers.name, `%${query.q}%`),
               ilike(serviceWorkers.phone, `%${query.q}%`),
               ilike(serviceWorkers.currentCity, `%${query.q}%`),
+              ilike(serviceWorkers.hometown, `%${query.q}%`),
+              sql`${serviceWorkers.skills}::text ILIKE ${`%${query.q}%`}`,
             )
           : undefined,
       );
@@ -573,6 +641,28 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
     },
   );
 
+  app.post(
+    '/api/v1/workers/:id/restore',
+    { preHandler: [app.authenticate] },
+    async (request) => {
+      const actor = assertRole(request, ['dispatcher']);
+      const id = uuid.parse((request.params as { id: string }).id);
+      const [row] = await db
+        .update(serviceWorkers)
+        .set({
+          deletedAt: null,
+          status: '空档',
+          updatedAt: now(),
+          updatedBy: actor.id,
+        })
+        .where(eq(serviceWorkers.id, id))
+        .returning();
+      if (!row) throw new AppError(404, 'NOT_FOUND', '服务人员不存在');
+      const schedules = await workerSchedules(db, [id]);
+      return { item: workerDto(row, schedules.get(id) ?? []) };
+    },
+  );
+
   app.get(
     '/api/v1/orders',
     { preHandler: [app.authenticate] },
@@ -624,12 +714,17 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
       ]);
       const input = orderInput.parse(request.body);
       const item = await db.transaction(async (tx) => {
-        if (input.workerId && input.createSchedule)
+        await assertActiveCustomer(tx, input.customerId);
+        if (input.workerId) await assertActiveWorker(tx, input.workerId);
+        const occupies = Boolean(
+          input.workerId && orderOccupiesSchedule(input.status),
+        );
+        if (input.workerId && occupies)
           await assertNoConflict(
             tx,
             input.workerId,
-            shanghaiDate(input.startDate),
-            shanghaiDate(input.endDate),
+            shanghaiRangeStart(input.startDate),
+            shanghaiRangeEnd(input.endDate),
           );
         const [order] = await tx
           .insert(serviceOrders)
@@ -646,12 +741,13 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
             updatedBy: actor.id,
           })
           .returning();
-        if (input.workerId && input.createSchedule)
+        if (input.workerId && occupies)
           await tx.insert(serviceSchedules).values({
             workerId: input.workerId,
             orderId: order.id,
-            startTime: shanghaiDate(input.startDate),
-            endTime: shanghaiDate(input.endDate),
+            sourceType: 'order',
+            startTime: shanghaiRangeStart(input.startDate),
+            endTime: shanghaiRangeEnd(input.endDate),
             status: input.status === 'in_service' ? 'in_service' : 'confirmed',
             remark: input.remark ?? '',
             createdBy: actor.id,
@@ -702,6 +798,14 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
         const nextStartDate = input.startDate ?? existing.startDate;
         const nextEndDate = input.endDate ?? existing.endDate;
         const nextStatus = input.status ?? existing.status;
+        if (nextEndDate < nextStartDate)
+          throw new AppError(
+            400,
+            'VALIDATION_ERROR',
+            '结束日期不能早于开始日期',
+          );
+        if (input.customerId !== undefined)
+          await assertActiveCustomer(tx, input.customerId);
         const [existingSchedule] = await tx
           .select()
           .from(serviceSchedules)
@@ -713,9 +817,20 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
           )
           .limit(1);
 
-        if (nextWorkerId) {
-          const start = shanghaiDate(nextStartDate);
-          const end = shanghaiDate(nextEndDate);
+        const occupies = Boolean(
+          nextWorkerId && orderOccupiesSchedule(nextStatus),
+        );
+        if (nextWorkerId && occupies) {
+          if (
+            input.workerId !== undefined ||
+            input.startDate !== undefined ||
+            input.endDate !== undefined ||
+            input.status !== undefined ||
+            !existingSchedule
+          )
+            await assertActiveWorker(tx, nextWorkerId);
+          const start = shanghaiRangeStart(nextStartDate);
+          const end = shanghaiRangeEnd(nextEndDate);
           await assertNoConflict(
             tx,
             nextWorkerId,
@@ -743,6 +858,7 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
             await tx.insert(serviceSchedules).values({
               workerId: nextWorkerId,
               orderId: id,
+              sourceType: 'order',
               startTime: start,
               endTime: end,
               status: scheduleStatusForOrder(nextStatus),
@@ -755,8 +871,7 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
           await tx
             .update(serviceSchedules)
             .set({
-              deletedAt: now(),
-              status: 'cancelled',
+              status: scheduleStatusForOrder(nextStatus),
               updatedAt: now(),
               updatedBy: actor.id,
             })
@@ -865,16 +980,18 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
     async (request, reply) => {
       const actor = assertRole(request, ['dispatcher']);
       const input = scheduleInput.parse(request.body);
-      const start = shanghaiDate(input.startTime),
-        end = shanghaiDate(input.endTime);
+      const start = shanghaiRangeStart(input.startTime),
+        end = shanghaiRangeEnd(input.endTime);
       if (end < start)
         throw new AppError(400, 'VALIDATION_ERROR', '结束时间不能早于开始时间');
+      await assertActiveWorker(db, input.workerId);
       await assertNoConflict(db, input.workerId, start, end);
       const [item] = await db
         .insert(serviceSchedules)
         .values({
           ...input,
-          orderId: input.orderId ?? undefined,
+          orderId: undefined,
+          sourceType: 'manual',
           startTime: start,
           endTime: end,
           remark: input.remark ?? '',
@@ -902,12 +1019,19 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
       if (!existing) throw new AppError(404, 'NOT_FOUND', '排期不存在');
       const workerId = input.workerId ?? existing.workerId,
         start = input.startTime
-          ? shanghaiDate(input.startTime)
+          ? shanghaiRangeStart(input.startTime)
           : existing.startTime,
-        end = input.endTime ? shanghaiDate(input.endTime) : existing.endTime;
+        end = input.endTime
+          ? shanghaiRangeEnd(input.endTime)
+          : existing.endTime;
       if (end < start)
         throw new AppError(400, 'VALIDATION_ERROR', '结束时间不能早于开始时间');
-      await assertNoConflict(db, workerId, start, end, id);
+      const nextStatus = input.status ?? existing.status;
+      if (nextStatus !== 'cancelled' && nextStatus !== 'completed') {
+        if (input.workerId !== undefined)
+          await assertActiveWorker(db, workerId);
+        await assertNoConflict(db, workerId, start, end, id);
+      }
       const [item] = await db
         .update(serviceSchedules)
         .set({

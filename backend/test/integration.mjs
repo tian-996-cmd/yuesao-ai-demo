@@ -1,9 +1,13 @@
 import assert from 'node:assert/strict';
+import { createHmac } from 'node:crypto';
 import pg from 'pg';
 
 const base = 'http://127.0.0.1:3001/api/v1';
 const databaseUrl = process.env.DATABASE_URL;
-assert.ok(databaseUrl, 'DATABASE_URL is required for PostgreSQL integration tests');
+assert.ok(
+  databaseUrl,
+  'DATABASE_URL is required for PostgreSQL integration tests',
+);
 
 async function queryDb(text, values = []) {
   const client = new pg.Client({ connectionString: databaseUrl });
@@ -46,7 +50,9 @@ const schemaState = await queryDb(`
       from pg_tables
       where schemaname = 'public'
         and tablename in ('roles', 'users', 'customers', 'service_workers', 'service_orders', 'service_schedules')) as tables,
-    exists(select 1 from pg_constraint where conname = 'service_schedules_no_overlap') as has_exclusion
+    exists(select 1 from pg_constraint where conname = 'service_schedules_no_overlap') as has_exclusion,
+    exists(select 1 from information_schema.columns where table_name='service_schedules' and column_name='source_type') as has_source_type,
+    exists(select 1 from pg_indexes where indexname='schedules_active_order_unique') as has_order_unique
 `);
 assert.equal(schemaState.rows[0].has_btree_gist, true);
 assert.deepEqual(schemaState.rows[0].tables, [
@@ -58,8 +64,11 @@ assert.deepEqual(schemaState.rows[0].tables, [
   'users',
 ]);
 assert.equal(schemaState.rows[0].has_exclusion, true);
+assert.equal(schemaState.rows[0].has_source_type, true);
+assert.equal(schemaState.rows[0].has_order_unique, true);
 
-const seeded = await queryDb(`
+const seeded = await queryDb(
+  `
   select
     (select count(*)::int from roles where slug in ('admin', 'customer_service', 'sales', 'dispatcher', 'finance')) as role_count,
     (select count(*)::int from users where username = $1) as admin_count,
@@ -67,7 +76,9 @@ const seeded = await queryDb(`
     (select count(*)::int from service_workers where id in ('40000000-0000-4000-8000-000000000001', '40000000-0000-4000-8000-000000000002')) as worker_count,
     (select count(*)::int from service_orders where id in ('50000000-0000-4000-8000-000000000001', '50000000-0000-4000-8000-000000000002')) as order_count,
     (select count(*)::int from service_schedules where id in ('60000000-0000-4000-8000-000000000001', '60000000-0000-4000-8000-000000000002')) as schedule_count
-`, [process.env.BOOTSTRAP_ADMIN_USERNAME ?? 'admin']);
+`,
+  [process.env.BOOTSTRAP_ADMIN_USERNAME ?? 'admin'],
+);
 assert.deepEqual(seeded.rows[0], {
   role_count: 5,
   admin_count: 1,
@@ -77,7 +88,13 @@ assert.deepEqual(seeded.rows[0], {
   schedule_count: 2,
 });
 
-for (const path of ['/customers', '/workers', '/orders', '/schedules']) {
+for (const path of [
+  '/context',
+  '/customers',
+  '/workers',
+  '/orders',
+  '/schedules',
+]) {
   const unauthorized = await request(path);
   assert.equal(unauthorized.status, 401, `${path} must require authentication`);
 }
@@ -98,10 +115,33 @@ const login = await request('/auth/login', {
 });
 assert.equal(login.status, 200);
 const token = login.body.token;
-for (const path of ['/customers', '/workers', '/orders', '/schedules']) {
+const header = Buffer.from(
+  JSON.stringify({ alg: 'HS256', typ: 'JWT' }),
+).toString('base64url');
+const payload = Buffer.from(
+  JSON.stringify({
+    ...login.body.user,
+    exp: Math.floor(Date.now() / 1000) - 60,
+  }),
+).toString('base64url');
+const signature = createHmac('sha256', process.env.JWT_SECRET)
+  .update(`${header}.${payload}`)
+  .digest('base64url');
+const expiredToken = `${header}.${payload}.${signature}`;
+assert.equal((await request('/auth/me', { token: expiredToken })).status, 401);
+for (const path of [
+  '/context',
+  '/customers',
+  '/workers',
+  '/orders',
+  '/schedules',
+]) {
   const authorized = await request(path, { token });
   assert.equal(authorized.status, 200, `${path} must accept a valid token`);
 }
+const context = await request('/context', { token });
+assert.match(context.body.currentDate, /^\d{4}-\d{2}-\d{2}$/);
+assert.equal(context.body.timeZone, 'Asia/Shanghai');
 const roles = await request('/roles', { token });
 assert.equal(roles.status, 200);
 const salesRole = roles.body.items.find((item) => item.slug === 'sales');
@@ -131,6 +171,103 @@ const forbiddenWorkerWrite = await request('/workers', {
   body: JSON.stringify({}),
 });
 assert.equal(forbiddenWorkerWrite.status, 403);
+
+const roleTokens = { sales: salesLogin.body.token };
+for (const slug of ['customer_service', 'dispatcher', 'finance']) {
+  const role = roles.body.items.find((item) => item.slug === slug);
+  const username = `${slug}-${Date.now()}`;
+  const created = await request('/users', {
+    token,
+    method: 'POST',
+    body: JSON.stringify({
+      username,
+      password: `${slug}-pass-2026`,
+      name: `测试${slug}`,
+      roleId: role.id,
+    }),
+  });
+  assert.equal(created.status, 201);
+  const signedIn = await request('/auth/login', {
+    method: 'POST',
+    body: JSON.stringify({ username, password: `${slug}-pass-2026` }),
+  });
+  assert.equal(signedIn.status, 200);
+  roleTokens[slug] = signedIn.body.token;
+}
+assert.equal(
+  (await request('/customers', { token: roleTokens.finance })).status,
+  200,
+);
+assert.equal(
+  (
+    await request('/customers', {
+      token: roleTokens.finance,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  403,
+);
+assert.equal(
+  (
+    await request('/workers', {
+      token: roleTokens.customer_service,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  403,
+);
+assert.equal(
+  (
+    await request('/customers', {
+      token: roleTokens.dispatcher,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  403,
+);
+assert.equal(
+  (
+    await request('/customers', {
+      token: roleTokens.customer_service,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  400,
+);
+assert.equal(
+  (
+    await request('/workers', {
+      token: roleTokens.dispatcher,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  400,
+);
+assert.equal(
+  (
+    await request('/orders', {
+      token: roleTokens.sales,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  400,
+);
+assert.equal(
+  (
+    await request('/orders', {
+      token: roleTokens.finance,
+      method: 'POST',
+      body: '{}',
+    })
+  ).status,
+  403,
+);
 
 const stamp = Date.now();
 const customerPayload = (name) => ({
@@ -177,9 +314,12 @@ const updatedCustomerA = await request(`/customers/${customerA.body.item.id}`, {
 });
 assert.equal(updatedCustomerA.status, 200);
 assert.equal(updatedCustomerA.body.item.remark, '只修改客户 A');
-const untouchedCustomerB = await request(`/customers/${customerB.body.item.id}`, {
-  token,
-});
+const untouchedCustomerB = await request(
+  `/customers/${customerB.body.item.id}`,
+  {
+    token,
+  },
+);
 assert.equal(untouchedCustomerB.status, 200);
 assert.equal(untouchedCustomerB.body.item.remark, '集成测试客户');
 const workerPayload = (name) => ({
@@ -229,6 +369,16 @@ const untouchedWorkerB = await request(`/workers/${workerB.body.item.id}`, {
 });
 assert.equal(untouchedWorkerB.status, 200);
 assert.equal(untouchedWorkerB.body.item.introduction, '集成测试人员');
+for (const term of [`人员A-${stamp}`, `人员A`, '  陕西  ', '老人照护']) {
+  const searched = await request(`/workers?q=${encodeURIComponent(term)}`, {
+    token,
+  });
+  assert.equal(searched.status, 200);
+  assert.ok(
+    searched.body.items.some((item) => item.id === workerA.body.item.id),
+    `worker search must match ${term}`,
+  );
+}
 const orderPayload = {
   customerId: customerA.body.item.id,
   workerId: workerA.body.item.id,
@@ -264,6 +414,39 @@ assert.equal(order1.body.item.customerId, customerA.body.item.id);
 assert.equal(order1.body.item.workerId, workerA.body.item.id);
 assert.equal(order2.body.item.customerId, customerB.body.item.id);
 assert.equal(order2.body.item.workerId, workerB.body.item.id);
+const invalidOrderRange = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    ...orderPayload,
+    startDate: '2027-03-10',
+    endDate: '2027-03-09',
+  }),
+});
+assert.equal(invalidOrderRange.status, 400);
+const invalidOrderPrice = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({ ...orderPayload, price: -1 }),
+});
+assert.equal(invalidOrderPrice.status, 400);
+const invalidPartialRange = await request(`/orders/${order1.body.item.id}`, {
+  token,
+  method: 'PATCH',
+  body: JSON.stringify({ endDate: '2026-09-30' }),
+});
+assert.equal(invalidPartialRange.status, 400);
+const invalidScheduleRange = await request('/schedules', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    workerId: workerA.body.item.id,
+    startTime: '2027-04-10',
+    endTime: '2027-04-09',
+    status: 'confirmed',
+  }),
+});
+assert.equal(invalidScheduleRange.status, 400);
 const updatedOrder1 = await request(`/orders/${order1.body.item.id}`, {
   token,
   method: 'PATCH',
@@ -291,6 +474,17 @@ const conflict = await request('/schedules', {
 assert.equal(conflict.status, 409);
 assert.equal(conflict.body.error.code, 'SCHEDULE_CONFLICT');
 assert.equal(conflict.body.error.message, '该人员当前时间段已有服务安排。');
+const inclusiveBoundaryConflict = await request('/schedules', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    workerId: workerA.body.item.id,
+    startTime: '2026-10-20',
+    endTime: '2026-10-20',
+    status: 'confirmed',
+  }),
+});
+assert.equal(inclusiveBoundaryConflict.status, 409);
 const alternate = await request('/schedules', {
   token,
   method: 'POST',
@@ -302,6 +496,27 @@ const alternate = await request('/schedules', {
   }),
 });
 assert.equal(alternate.status, 201);
+assert.equal(
+  (
+    await request(`/schedules/${alternate.body.item.id}`, {
+      token,
+      method: 'DELETE',
+    })
+  ).status,
+  204,
+);
+const replacementAfterCancel = await request('/schedules', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    workerId: workerB.body.item.id,
+    startTime: '2026-10-10',
+    endTime: '2026-10-30',
+    status: 'confirmed',
+    remark: '取消后可重建',
+  }),
+});
+assert.equal(replacementAfterCancel.status, 201);
 const nonOverlapping = await request('/schedules', {
   token,
   method: 'POST',
@@ -313,13 +528,32 @@ const nonOverlapping = await request('/schedules', {
   }),
 });
 assert.equal(nonOverlapping.status, 201);
+assert.equal(nonOverlapping.body.item.sourceType, 'manual');
+
+const workerAView = await request(`/workers/${workerA.body.item.id}`, {
+  token,
+});
+assert.equal(workerAView.status, 200);
+assert.equal(workerAView.body.item.availability.locked, true);
+assert.equal(
+  workerAView.body.item.availability.nextAvailableDate,
+  '2026-10-31',
+);
+const orderScheduleView = workerAView.body.item.schedule.find(
+  (item) => item.orderId === order1.body.item.id,
+);
+assert.equal(orderScheduleView.sourceType, 'order');
 
 let directConflict;
 try {
   await queryDb(
     `insert into service_schedules (worker_id, start_time, end_time, status, remark)
      values ($1, $2, $3, 'confirmed', 'direct database overlap test')`,
-    [workerA.body.item.id, '2026-10-05T00:00:00+08:00', '2026-10-08T00:00:00+08:00'],
+    [
+      workerA.body.item.id,
+      '2026-10-05T00:00:00+08:00',
+      '2026-10-08T00:00:00+08:00',
+    ],
   );
 } catch (error) {
   directConflict = error;
@@ -344,6 +578,44 @@ const rejectedConcurrent = concurrentResults.find(
 assert.equal(rejectedConcurrent?.reason?.code, '23P01');
 await queryDb(
   "delete from service_schedules where remark = 'concurrent exclusion test'",
+);
+
+const concurrentOrderPayload = {
+  customerId: customerB.body.item.id,
+  workerId: workerB.body.item.id,
+  serviceType: '并发测试',
+  status: 'confirmed',
+  startDate: '2028-02-01',
+  endDate: '2028-02-10',
+  price: 5000,
+  remark: 'concurrent API order',
+};
+const concurrentOrders = await Promise.all([
+  request('/orders', {
+    token,
+    method: 'POST',
+    body: JSON.stringify(concurrentOrderPayload),
+  }),
+  request('/orders', {
+    token,
+    method: 'POST',
+    body: JSON.stringify(concurrentOrderPayload),
+  }),
+]);
+assert.deepEqual(
+  concurrentOrders.map((item) => item.status).sort((a, b) => a - b),
+  [201, 409],
+);
+const concurrentOrderCount = await queryDb(
+  "select count(*)::int as count from service_orders where remark='concurrent API order' and deleted_at is null",
+);
+assert.equal(concurrentOrderCount.rows[0].count, 1);
+const winningOrder = concurrentOrders.find((item) => item.status === 201).body
+  .item;
+assert.equal(
+  (await request(`/orders/${winningOrder.id}`, { token, method: 'DELETE' }))
+    .status,
+  204,
 );
 
 const assignOrder = await request(`/orders/${order2.body.item.id}`, {
@@ -371,6 +643,34 @@ const conflictingOrderEdit = await request(`/orders/${order1.body.item.id}`, {
 assert.equal(conflictingOrderEdit.status, 409);
 assert.equal(conflictingOrderEdit.body.error.code, 'SCHEDULE_CONFLICT');
 
+const cancelledOrder = await request(`/orders/${order1.body.item.id}`, {
+  token,
+  method: 'PATCH',
+  body: JSON.stringify({ status: 'cancelled' }),
+});
+assert.equal(cancelledOrder.status, 200);
+const replacementOrder = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    ...orderPayload,
+    customerId: customerB.body.item.id,
+    startDate: '2026-10-01',
+    endDate: '2026-10-20',
+    remark: '取消订单后释放档期',
+  }),
+});
+assert.equal(replacementOrder.status, 201);
+assert.equal(
+  (
+    await request(`/orders/${replacementOrder.body.item.id}`, {
+      token,
+      method: 'DELETE',
+    })
+  ).status,
+  204,
+);
+
 const deletedCustomerA = await request(`/customers/${customerA.body.item.id}`, {
   token,
   method: 'DELETE',
@@ -381,18 +681,25 @@ const customerAAfterDelete = await request(
   { token },
 );
 assert.equal(customerAAfterDelete.body.items.length, 0);
-const customerBAfterDelete = await request(`/customers/${customerB.body.item.id}`, {
-  token,
-});
+const customerBAfterDelete = await request(
+  `/customers/${customerB.body.item.id}`,
+  {
+    token,
+  },
+);
 assert.equal(customerBAfterDelete.status, 200);
 const customerRows = await queryDb(
   'select id, deleted_at from customers where id = any($1::uuid[]) order by id',
   [[customerA.body.item.id, customerB.body.item.id]],
 );
 assert.equal(customerRows.rows.length, 2);
-assert.ok(customerRows.rows.find((row) => row.id === customerA.body.item.id)?.deleted_at);
+assert.ok(
+  customerRows.rows.find((row) => row.id === customerA.body.item.id)
+    ?.deleted_at,
+);
 assert.equal(
-  customerRows.rows.find((row) => row.id === customerB.body.item.id)?.deleted_at,
+  customerRows.rows.find((row) => row.id === customerB.body.item.id)
+    ?.deleted_at,
   null,
 );
 
@@ -415,11 +722,67 @@ const workerRows = await queryDb(
   [[workerA.body.item.id, workerB.body.item.id]],
 );
 assert.equal(workerRows.rows.length, 2);
-assert.ok(workerRows.rows.find((row) => row.id === workerA.body.item.id)?.deleted_at);
+assert.ok(
+  workerRows.rows.find((row) => row.id === workerA.body.item.id)?.deleted_at,
+);
 assert.equal(
   workerRows.rows.find((row) => row.id === workerB.body.item.id)?.deleted_at,
   null,
 );
+
+const historicalOrders = await request(
+  `/orders?q=${encodeURIComponent(`客户A-${stamp}`)}`,
+  { token },
+);
+assert.ok(
+  historicalOrders.body.items.some(
+    (item) =>
+      item.id === order1.body.item.id &&
+      item.customerName === `客户A-${stamp}` &&
+      item.workerName === `人员A-${stamp}`,
+  ),
+);
+const rejectedDeletedCustomer = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    ...orderPayload,
+    customerId: customerA.body.item.id,
+    workerId: workerB.body.item.id,
+    startDate: '2029-01-01',
+    endDate: '2029-01-05',
+  }),
+});
+assert.equal(rejectedDeletedCustomer.status, 400);
+assert.equal(rejectedDeletedCustomer.body.error.code, 'INVALID_CUSTOMER');
+const rejectedDeletedWorker = await request('/schedules', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    workerId: workerA.body.item.id,
+    startTime: '2029-02-01',
+    endTime: '2029-02-05',
+    status: 'confirmed',
+  }),
+});
+assert.equal(rejectedDeletedWorker.status, 400);
+assert.equal(rejectedDeletedWorker.body.error.code, 'INVALID_WORKER');
+const restoredWorker = await request(
+  `/workers/${workerA.body.item.id}/restore`,
+  { token, method: 'POST' },
+);
+assert.equal(restoredWorker.status, 200);
+const restoredSchedule = await request('/schedules', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    workerId: workerA.body.item.id,
+    startTime: '2029-02-01',
+    endTime: '2029-02-05',
+    status: 'confirmed',
+  }),
+});
+assert.equal(restoredSchedule.status, 201);
 
 const disableSales = await request(`/users/${createUser.body.item.id}`, {
   token,
@@ -427,7 +790,9 @@ const disableSales = await request(`/users/${createUser.body.item.id}`, {
   body: JSON.stringify({ status: 'disabled' }),
 });
 assert.equal(disableSales.status, 200);
-const disabledToken = await request('/customers', { token: salesLogin.body.token });
+const disabledToken = await request('/customers', {
+  token: salesLogin.body.token,
+});
 assert.equal(disabledToken.status, 401);
 const disabledLogin = await request('/auth/login', {
   method: 'POST',

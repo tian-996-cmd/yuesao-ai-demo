@@ -11,6 +11,11 @@ import {
 import { useState } from 'react';
 import type { MediaAsset, MediaUploadMetadata } from '@/lib/media-types';
 import type { MaternityNurse } from '@/lib/nurse-types';
+import {
+  availabilityFor,
+  displayStatus,
+  isEffectiveSlot,
+} from '@/lib/availability';
 import { formatShort, nurseGrade } from '@/lib/v3-engine';
 import { scheduleStyles } from '@/lib/nurse-constants';
 import { NurseAvatar } from './nurse-avatar';
@@ -22,6 +27,7 @@ type Filter = 'all' | 'profile' | 'service_case' | 'cooking';
 export function NurseDetailView({
   nurse,
   media,
+  currentDate,
   onBack,
   onEdit,
   onSchedule,
@@ -35,6 +41,7 @@ export function NurseDetailView({
 }: {
   nurse: MaternityNurse;
   media: MediaAsset[];
+  currentDate: string;
   onBack: () => void;
   onEdit: () => void;
   onSchedule: () => void;
@@ -49,6 +56,7 @@ export function NurseDetailView({
   const [tab, setTab] = useState<Tab>('概览'),
     [albumFilter, setAlbumFilter] = useState<Filter>('all'),
     [serviceFilter, setServiceFilter] = useState<string>();
+  const availability = availabilityFor(nurse, currentDate);
   const own = media.filter((x) => x.nurseId === nurse.id),
     cooking = own.filter((x) => x.category === 'cooking').slice(0, 4),
     headerPhotos = own
@@ -118,10 +126,11 @@ export function NurseDetailView({
               {nurse.ratings.overall}
             </span>
             <span>
-              当前 <NurseStatusBadge status={nurse.status} />
+              当前{' '}
+              <NurseStatusBadge status={displayStatus(nurse, currentDate)} />
             </span>
             <span>
-              下一可排 <b>{formatShort(nurse.availableFrom)}</b>
+              下一长期空档 <b>{formatShort(availability.nextAvailableDate)}</b>
             </span>
           </div>
         </div>
@@ -233,21 +242,32 @@ export function NurseDetailView({
                   <span>资源概览</span>
                   <h2>当前资源状态</h2>
                 </div>
-                <NurseStatusBadge status={nurse.status} />
+                <NurseStatusBadge status={displayStatus(nurse, currentDate)} />
               </header>
               <dl>
                 <dt>当前档期</dt>
                 <dd>
-                  {nurse.schedule.find((x) => x.status === '上户中')
-                    ?.customerName ?? '暂无上户订单'}
+                  {nurse.schedule.find(
+                    (x) =>
+                      isEffectiveSlot(x) &&
+                      x.start <= currentDate &&
+                      x.end >= currentDate,
+                  )?.customerName ?? '暂无上户订单'}
                 </dd>
                 <dt>最近服务</dt>
                 <dd>
                   {nurse.serviceHistory[0]?.city ?? '—'} ·{' '}
                   {nurse.serviceHistory[0]?.familyType ?? '—'}
                 </dd>
-                <dt>下一可上户</dt>
-                <dd>{nurse.availableFrom}</dd>
+                <dt>未来已锁档</dt>
+                <dd>
+                  {nurse.schedule
+                    .filter((x) => isEffectiveSlot(x) && x.start > currentDate)
+                    .map((x) => `${formatShort(x.start)}–${formatShort(x.end)}`)
+                    .join('、') || '暂无'}
+                </dd>
+                <dt>下一长期空档</dt>
+                <dd>{availability.nextAvailableDate}</dd>
                 <dt>综合评价</dt>
                 <dd>
                   <span className="rating">

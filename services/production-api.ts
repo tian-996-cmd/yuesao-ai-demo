@@ -104,12 +104,13 @@ export const productionApi = {
     }
   },
   async bootstrap() {
-    const [customers, workers, orders] = await Promise.all([
+    const [customers, workers, orders, context] = await Promise.all([
       fetchAll<Customer>('/customers'),
       fetchAll<MaternityNurse>('/workers'),
       fetchAll<ServiceOrder>('/orders'),
+      apiRequest<{ currentDate: string; timeZone: string }>('/context'),
     ]);
-    return { customers, nurses: workers, orders };
+    return { customers, nurses: workers, orders, context };
   },
   async createCustomer(input: NewCustomerInput) {
     return (
@@ -167,7 +168,6 @@ export const productionApi = {
   },
   async createSchedule(input: {
     workerId: string;
-    orderId?: string;
     startTime: string;
     endTime: string;
     status?: string;
