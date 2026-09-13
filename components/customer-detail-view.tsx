@@ -11,6 +11,7 @@ import {
 import type { MediaAsset } from '@/lib/media-types';
 import type { MaternityNurse } from '@/lib/nurse-types';
 import type { Customer } from '@/lib/types';
+import { formatChineseDate } from '@/lib/date';
 import { NurseAvatar } from './nurse-avatar';
 import { StatusBadge } from './status-badge';
 import { Button } from './ui/button';
@@ -55,7 +56,8 @@ export function CustomerDetailView({
             <StatusBadge status={customer.status} />
           </div>
           <p>
-            {customer.phone} · {customer.city} · 预产期 {customer.dueDate}
+            {customer.phone} · {customer.city} · 预产期{' '}
+            {formatChineseDate(customer.dueDate)}
           </p>
           <small>
             负责人：{customer.consultant}　最近跟进：{customer.lastFollowUp}
@@ -94,7 +96,7 @@ export function CustomerDetailView({
               {[
                 ['手机号', customer.phone],
                 ['城市', customer.city],
-                ['预产期', customer.dueDate],
+                ['预产期', formatChineseDate(customer.dueDate)],
                 ['服务天数', `${customer.serviceDays}天`],
                 [
                   '预算',

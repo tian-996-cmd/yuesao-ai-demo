@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react';
 import { personalityOptions, skillOptions } from '@/lib/nurse-constants';
 import type { MaternityNurse, NurseFormInput } from '@/lib/nurse-types';
 import { Button } from './ui/button';
+import { DateField } from './date-field';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import {
@@ -146,10 +147,10 @@ export function NurseFormSheet({
             </label>
             <label>
               最近可上户
-              <Input
-                type="date"
+              <DateField
                 value={form.availableFrom}
-                onChange={(event) => set('availableFrom', event.target.value)}
+                onChange={(value) => set('availableFrom', value)}
+                placeholder="请选择最近可上户日期"
               />
             </label>
             <label>

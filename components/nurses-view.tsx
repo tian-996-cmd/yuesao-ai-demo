@@ -2,6 +2,7 @@
 import { Filter, Plus, Search, Star, UsersRound } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { availabilityFor, displayStatus } from '@/lib/availability';
+import { formatChineseDate } from '@/lib/date';
 import type { MediaAsset } from '@/lib/media-types';
 import type { MaternityNurse, NurseStatus } from '@/lib/nurse-types';
 import { nurseGrade, parseDay } from '@/lib/v3-engine';
@@ -200,10 +201,7 @@ export function NursesView({
                           />
                         </TableCell>
                         <TableCell>
-                          {availability.nextAvailableDate
-                            .slice(5)
-                            .replace('-', '月')}
-                          日起
+                          {formatChineseDate(availability.nextAvailableDate)}起
                         </TableCell>
                         <TableCell>
                           <span className="rating">
@@ -256,10 +254,9 @@ export function NursesView({
                     <span>/26天</span>
                     <span>
                       空档{' '}
-                      {availabilityFor(
-                        item,
-                        currentDate,
-                      ).nextAvailableDate.slice(5)}
+                      {formatChineseDate(
+                        availabilityFor(item, currentDate).nextAvailableDate,
+                      )}
                     </span>
                   </div>
                   <div className="mini-tags">

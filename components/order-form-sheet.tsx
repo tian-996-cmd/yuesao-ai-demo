@@ -4,6 +4,7 @@ import type { Customer } from '@/lib/types';
 import type { MaternityNurse } from '@/lib/nurse-types';
 import type { NewOrderInput, ServiceOrder } from '@/lib/order-types';
 import { Button } from './ui/button';
+import { DateField } from './date-field';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import {
@@ -25,7 +26,9 @@ const emptyOrder = (
   status: 'pending',
   startDate: '',
   endDate: '',
-  price: 0,
+  totalAmount: 0,
+  depositAmount: 0,
+  finalPaymentDueDate: null,
   remark: '',
   createSchedule: true,
 });
@@ -43,7 +46,9 @@ const orderFormValue = (
         status: editing.status,
         startDate: editing.startDate,
         endDate: editing.endDate,
-        price: editing.price,
+        totalAmount: editing.totalAmount,
+        depositAmount: editing.depositAmount,
+        finalPaymentDueDate: editing.finalPaymentDueDate ?? null,
         remark: editing.remark,
         createSchedule: false,
       }
@@ -89,8 +94,24 @@ export function OrderFormSheet({
       setError('结束日期不能早于开始日期');
       return;
     }
-    if (!Number.isFinite(form.price) || form.price < 0) {
-      setError('服务费用不能小于 0');
+    if (!Number.isFinite(form.totalAmount) || form.totalAmount <= 0) {
+      setError('订单总金额必须大于 0');
+      return;
+    }
+    if (
+      !Number.isFinite(form.depositAmount) ||
+      form.depositAmount < 0 ||
+      form.depositAmount > form.totalAmount
+    ) {
+      setError('定金金额应在 0 到订单总金额之间');
+      return;
+    }
+    if (
+      editing &&
+      Math.round(form.totalAmount * 100) <
+        Math.round(editing.paymentSummary.receivedAmount * 100)
+    ) {
+      setError('订单总金额不能低于已收金额，请先处理收款记录。');
       return;
     }
     if ((form.remark?.length ?? 0) > 5000) {
@@ -183,35 +204,73 @@ export function OrderFormSheet({
             </label>
             <label htmlFor="order-start-date">
               开始日期
-              <Input
+              <DateField
                 id="order-start-date"
-                type="date"
                 value={form.startDate}
-                onChange={(event) => set('startDate', event.target.value)}
+                onChange={(value) => set('startDate', value)}
+                placeholder="请选择服务开始日期"
                 required
               />
             </label>
             <label htmlFor="order-end-date">
               结束日期
-              <Input
+              <DateField
                 id="order-end-date"
-                type="date"
                 value={form.endDate}
-                onChange={(event) => set('endDate', event.target.value)}
+                onChange={(value) => set('endDate', value)}
+                placeholder="请选择服务结束日期"
                 required
               />
             </label>
-            <label htmlFor="order-price">
-              服务费用
+            <label htmlFor="order-total-amount">
+              订单总金额
               <Input
-                id="order-price"
+                id="order-total-amount"
                 type="number"
-                min="0"
-                value={form.price}
-                onChange={(event) => set('price', Number(event.target.value))}
+                min="0.01"
+                step="0.01"
+                value={form.totalAmount}
+                onChange={(event) =>
+                  set('totalAmount', Number(event.target.value))
+                }
+                required
               />
             </label>
-            <div />
+            <label htmlFor="order-deposit-amount">
+              定金金额
+              <Input
+                id="order-deposit-amount"
+                type="number"
+                min="0"
+                step="0.01"
+                max={form.totalAmount || undefined}
+                value={form.depositAmount}
+                onChange={(event) =>
+                  set('depositAmount', Number(event.target.value))
+                }
+              />
+            </label>
+            <label htmlFor="order-final-due-date">
+              尾款应付日期
+              <DateField
+                id="order-final-due-date"
+                value={form.finalPaymentDueDate ?? ''}
+                onChange={(value) => set('finalPaymentDueDate', value)}
+                placeholder="请选择尾款应付日期"
+              />
+            </label>
+            <div className="order-balance-preview">
+              <span>预计尾款</span>
+              <strong>
+                ¥
+                {Math.max(
+                  0,
+                  form.totalAmount - form.depositAmount,
+                ).toLocaleString('zh-CN', {
+                  maximumFractionDigits: 2,
+                })}
+              </strong>
+            </div>
             <label className="full" htmlFor="order-remark">
               备注
               <Textarea

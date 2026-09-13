@@ -49,7 +49,7 @@ const schemaState = await queryDb(`
     (select json_agg(tablename order by tablename)
       from pg_tables
       where schemaname = 'public'
-        and tablename in ('roles', 'users', 'customers', 'service_workers', 'service_orders', 'service_schedules')) as tables,
+        and tablename in ('roles', 'users', 'customers', 'service_workers', 'service_orders', 'service_schedules', 'payments')) as tables,
     exists(select 1 from pg_constraint where conname = 'service_schedules_no_overlap') as has_exclusion,
     exists(select 1 from information_schema.columns where table_name='service_schedules' and column_name='source_type') as has_source_type,
     exists(select 1 from pg_indexes where indexname='schedules_active_order_unique') as has_order_unique
@@ -57,6 +57,7 @@ const schemaState = await queryDb(`
 assert.equal(schemaState.rows[0].has_btree_gist, true);
 assert.deepEqual(schemaState.rows[0].tables, [
   'customers',
+  'payments',
   'roles',
   'service_orders',
   'service_schedules',
@@ -93,6 +94,7 @@ for (const path of [
   '/customers',
   '/workers',
   '/orders',
+  '/dashboard/payments',
   '/schedules',
 ]) {
   const unauthorized = await request(path);
@@ -134,6 +136,7 @@ for (const path of [
   '/customers',
   '/workers',
   '/orders',
+  '/dashboard/payments',
   '/schedules',
 ]) {
   const authorized = await request(path, { token });
@@ -453,7 +456,8 @@ const boundaryOrder = await request('/orders', {
     status: 'pending',
     startDate: '2027-10-25',
     endDate: '2027-10-30',
-    price: 0,
+    totalAmount: 5000,
+    depositAmount: 0,
     remark: '订单边界测试',
   }),
 });
@@ -509,7 +513,9 @@ const orderPayload = {
   status: 'confirmed',
   startDate: '2026-10-01',
   endDate: '2026-10-20',
-  price: 7600,
+  totalAmount: 7600,
+  depositAmount: 2000,
+  finalPaymentDueDate: '2026-10-01',
   remark: '集成测试订单',
   createSchedule: true,
 };
@@ -550,7 +556,7 @@ assert.equal(invalidOrderRange.status, 400);
 const invalidOrderPrice = await request('/orders', {
   token,
   method: 'POST',
-  body: JSON.stringify({ ...orderPayload, price: -1 }),
+  body: JSON.stringify({ ...orderPayload, totalAmount: -1 }),
 });
 assert.equal(invalidOrderPrice.status, 400);
 const invalidPartialRange = await request(`/orders/${order1.body.item.id}`, {
@@ -573,17 +579,277 @@ assert.equal(invalidScheduleRange.status, 400);
 const updatedOrder1 = await request(`/orders/${order1.body.item.id}`, {
   token,
   method: 'PATCH',
-  body: JSON.stringify({ remark: '只修改订单 1', price: 7800 }),
+  body: JSON.stringify({ remark: '只修改订单 1', totalAmount: 7800 }),
 });
 assert.equal(updatedOrder1.status, 200);
 assert.equal(updatedOrder1.body.item.remark, '只修改订单 1');
-assert.equal(updatedOrder1.body.item.price, 7800);
+assert.equal(updatedOrder1.body.item.totalAmount, 7800);
 const untouchedOrder2 = await request(`/orders/${order2.body.item.id}`, {
   token,
 });
 assert.equal(untouchedOrder2.status, 200);
-assert.equal(untouchedOrder2.body.item.price, 7600);
+assert.equal(untouchedOrder2.body.item.totalAmount, 7600);
 assert.equal(untouchedOrder2.body.item.remark, '集成测试订单');
+
+const paymentOrder = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    customerId: customerB.body.item.id,
+    workerId: null,
+    serviceType: '收款测试',
+    status: 'completed',
+    startDate: '2027-05-01',
+    endDate: '2027-05-20',
+    totalAmount: 16000,
+    depositAmount: 3000,
+    finalPaymentDueDate: '2099-05-01',
+    remark: 'payment integration order',
+  }),
+});
+assert.equal(paymentOrder.status, 201);
+assert.equal(paymentOrder.body.item.paymentSummary.paymentStatus, 'unpaid');
+assert.equal(paymentOrder.body.item.paymentSummary.receivedAmount, 0);
+assert.equal(paymentOrder.body.item.paymentSummary.outstandingAmount, 16000);
+assert.equal(
+  (
+    await request(`/orders/${paymentOrder.body.item.id}/payments`, {
+      token: roleTokens.sales,
+      method: 'POST',
+      body: JSON.stringify({
+        amount: 3000,
+        paymentType: 'deposit',
+        paymentMethod: 'wechat',
+        paidAt: '2026-09-13',
+      }),
+    })
+  ).status,
+  403,
+);
+const depositPayment = await request(
+  `/orders/${paymentOrder.body.item.id}/payments`,
+  {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: JSON.stringify({
+      amount: 3000,
+      paymentType: 'deposit',
+      paymentMethod: 'wechat',
+      paidAt: '2026-09-13',
+      remark: '定金',
+    }),
+  },
+);
+assert.equal(depositPayment.status, 201);
+assert.equal(depositPayment.body.paymentSummary.paymentStatus, 'pending_final');
+assert.equal(depositPayment.body.paymentSummary.outstandingAmount, 13000);
+assert.equal(
+  (
+    await request(`/payments/${depositPayment.body.item.id}`, {
+      token: roleTokens.finance,
+      method: 'DELETE',
+    })
+  ).status,
+  204,
+);
+const afterVoid = await request(
+  `/orders/${paymentOrder.body.item.id}/payments`,
+  { token: roleTokens.customer_service },
+);
+assert.equal(afterVoid.status, 200);
+assert.equal(afterVoid.body.paymentSummary.receivedAmount, 0);
+assert.equal(afterVoid.body.paymentSummary.paymentStatus, 'unpaid');
+assert.equal(
+  afterVoid.body.items.find((item) => item.id === depositPayment.body.item.id)
+    .voided,
+  true,
+);
+const activeDeposit = await request(
+  `/orders/${paymentOrder.body.item.id}/payments`,
+  {
+    token,
+    method: 'POST',
+    body: JSON.stringify({
+      amount: 3000,
+      paymentType: 'deposit',
+      paymentMethod: 'wechat',
+      paidAt: '2026-09-13',
+    }),
+  },
+);
+assert.equal(activeDeposit.status, 201);
+const updatedDeposit = await request(
+  `/payments/${activeDeposit.body.item.id}`,
+  {
+    token: roleTokens.finance,
+    method: 'PATCH',
+    body: JSON.stringify({
+      paymentMethod: 'bank_transfer',
+      remark: '更正支付方式',
+    }),
+  },
+);
+assert.equal(updatedDeposit.status, 200);
+assert.equal(updatedDeposit.body.item.paymentMethod, 'bank_transfer');
+assert.equal(
+  updatedDeposit.body.item.creatorName,
+  activeDeposit.body.item.creatorName,
+);
+const overdueOrder = await request(`/orders/${paymentOrder.body.item.id}`, {
+  token,
+  method: 'PATCH',
+  body: JSON.stringify({ finalPaymentDueDate: '2020-01-01' }),
+});
+assert.equal(overdueOrder.status, 200);
+assert.equal(overdueOrder.body.item.paymentSummary.paymentStatus, 'overdue');
+assert.ok(overdueOrder.body.item.paymentSummary.overdueDays > 0);
+const overdueFiltered = await request('/orders?paymentStatus=overdue', {
+  token,
+});
+assert.equal(overdueFiltered.status, 200);
+assert.ok(
+  overdueFiltered.body.items.some(
+    (item) => item.id === paymentOrder.body.item.id,
+  ),
+);
+assert.ok(
+  overdueFiltered.body.items.every(
+    (item) => item.paymentSummary.paymentStatus === 'overdue',
+  ),
+);
+const excessivePayment = await request(
+  `/orders/${paymentOrder.body.item.id}/payments`,
+  {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: JSON.stringify({
+      amount: 13000.01,
+      paymentType: 'final',
+      paymentMethod: 'bank_transfer',
+      paidAt: '2026-09-25',
+    }),
+  },
+);
+assert.equal(excessivePayment.status, 409);
+assert.equal(excessivePayment.body.error.code, 'PAYMENT_EXCEEDS_OUTSTANDING');
+const finalPayment = await request(
+  `/orders/${paymentOrder.body.item.id}/payments`,
+  {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: JSON.stringify({
+      amount: 13000,
+      paymentType: 'final',
+      paymentMethod: 'bank_transfer',
+      paidAt: '2026-09-25',
+    }),
+  },
+);
+assert.equal(finalPayment.status, 201);
+assert.equal(finalPayment.body.paymentSummary.paymentStatus, 'paid');
+assert.equal(finalPayment.body.paymentSummary.outstandingAmount, 0);
+assert.equal(
+  (
+    await request(`/orders/${paymentOrder.body.item.id}/payments`, {
+      token: roleTokens.finance,
+      method: 'POST',
+      body: JSON.stringify({
+        amount: 1,
+        paymentType: 'other',
+        paymentMethod: 'cash',
+        paidAt: '2026-09-26',
+      }),
+    })
+  ).body.error.code,
+  'ORDER_PAID',
+);
+const belowReceived = await request(`/orders/${paymentOrder.body.item.id}`, {
+  token,
+  method: 'PATCH',
+  body: JSON.stringify({ totalAmount: 15000 }),
+});
+assert.equal(belowReceived.status, 409);
+assert.equal(belowReceived.body.error.code, 'TOTAL_BELOW_RECEIVED');
+
+const concurrentPaymentOrder = await request('/orders', {
+  token,
+  method: 'POST',
+  body: JSON.stringify({
+    customerId: customerB.body.item.id,
+    workerId: null,
+    serviceType: '并发收款测试',
+    status: 'confirmed',
+    startDate: '2028-06-01',
+    endDate: '2028-06-20',
+    totalAmount: 13000,
+    depositAmount: 0,
+    finalPaymentDueDate: '2028-06-01',
+    remark: 'concurrent payment order',
+  }),
+});
+const concurrentPaymentBody = JSON.stringify({
+  amount: 10000,
+  paymentType: 'partial',
+  paymentMethod: 'bank_transfer',
+  paidAt: '2026-09-13',
+});
+const concurrentPayments = await Promise.all([
+  request(`/orders/${concurrentPaymentOrder.body.item.id}/payments`, {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: concurrentPaymentBody,
+  }),
+  request(`/orders/${concurrentPaymentOrder.body.item.id}/payments`, {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: concurrentPaymentBody,
+  }),
+]);
+assert.deepEqual(
+  concurrentPayments.map((item) => item.status).sort((a, b) => a - b),
+  [201, 409],
+);
+const concurrentPaymentView = await request(
+  `/orders/${concurrentPaymentOrder.body.item.id}/payments`,
+  { token },
+);
+assert.equal(concurrentPaymentView.body.paymentSummary.receivedAmount, 10000);
+assert.equal(concurrentPaymentView.body.paymentSummary.outstandingAmount, 3000);
+const cancelledPaymentOrder = await request(
+  `/orders/${concurrentPaymentOrder.body.item.id}`,
+  { token, method: 'PATCH', body: JSON.stringify({ status: 'cancelled' }) },
+);
+assert.equal(cancelledPaymentOrder.status, 200);
+assert.equal(
+  (
+    await request(`/orders/${concurrentPaymentOrder.body.item.id}/payments`, {
+      token: roleTokens.finance,
+      method: 'POST',
+      body: JSON.stringify({
+        amount: 3000,
+        paymentType: 'final',
+        paymentMethod: 'cash',
+        paidAt: '2026-09-13',
+      }),
+    })
+  ).body.error.code,
+  'ORDER_CANCELLED',
+);
+const historicalPayment = await request(
+  `/orders/${order1.body.item.id}/payments`,
+  {
+    token: roleTokens.finance,
+    method: 'POST',
+    body: JSON.stringify({
+      amount: 1000,
+      paymentType: 'partial',
+      paymentMethod: 'cash',
+      paidAt: '2026-09-13',
+      remark: '停用后仍可查询',
+    }),
+  },
+);
+assert.equal(historicalPayment.status, 201);
 const conflict = await request('/schedules', {
   token,
   method: 'POST',
@@ -710,7 +976,8 @@ const concurrentOrderPayload = {
   status: 'confirmed',
   startDate: '2028-02-01',
   endDate: '2028-02-10',
-  price: 5000,
+  totalAmount: 5000,
+  depositAmount: 0,
   remark: 'concurrent API order',
 };
 const concurrentOrders = await Promise.all([
@@ -804,6 +1071,16 @@ const customerAAfterDelete = await request(
   { token },
 );
 assert.equal(customerAAfterDelete.body.items.length, 0);
+const historicalPaymentsAfterCustomerDelete = await request(
+  `/orders/${order1.body.item.id}/payments`,
+  { token: roleTokens.sales },
+);
+assert.equal(historicalPaymentsAfterCustomerDelete.status, 200);
+assert.ok(
+  historicalPaymentsAfterCustomerDelete.body.items.some(
+    (item) => item.id === historicalPayment.body.item.id,
+  ),
+);
 const customerBAfterDelete = await request(
   `/customers/${customerB.body.item.id}`,
   {

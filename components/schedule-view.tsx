@@ -10,6 +10,7 @@ import type {
 } from '@/lib/nurse-types';
 import type { Customer } from '@/lib/types';
 import { scheduleStyles } from '@/lib/nurse-constants';
+import { formatChineseDate } from '@/lib/date';
 import {
   availabilityFor,
   displayStatus,
@@ -328,11 +329,11 @@ export function ScheduleView({
                 </div>
                 <div>
                   <dt>开始日期</dt>
-                  <dd>{selected.slot.start}</dd>
+                  <dd>{formatChineseDate(selected.slot.start)}</dd>
                 </div>
                 <div>
                   <dt>结束日期</dt>
-                  <dd>{selected.slot.end}</dd>
+                  <dd>{formatChineseDate(selected.slot.end)}</dd>
                 </div>
                 <div>
                   <dt>排期来源</dt>

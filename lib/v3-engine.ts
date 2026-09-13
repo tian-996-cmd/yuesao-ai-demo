@@ -8,8 +8,8 @@ export const parseDay = (value: string) => {
   return Date.UTC(y, m - 1, d);
 };
 export const formatShort = (value: string) => {
-  const [, m, d] = value.split('-');
-  return `${Number(m)}月${Number(d)}日`;
+  const [y, m, d] = value.split('-');
+  return `${Number(y)}年${Number(m)}月${Number(d)}日`;
 };
 export const addDays = (value: string, days: number) =>
   new Date(parseDay(value) + days * DAY).toISOString().slice(0, 10);

@@ -7,7 +7,10 @@ import {
   Plus,
   ScanText,
   Sparkles,
+  WalletCards,
+  BadgeDollarSign,
 } from 'lucide-react';
+import { formatMoney } from '@/lib/date';
 import type { Customer } from '@/lib/types';
 import type { MaternityNurse } from '@/lib/nurse-types';
 import type { MediaAsset } from '@/lib/media-types';
@@ -30,6 +33,8 @@ export function DashboardView({
   onMatching,
   onSchedule,
   onParse,
+  paymentMetrics,
+  onOverdueOrders,
 }: {
   customers: Customer[];
   nurses: MaternityNurse[];
@@ -40,6 +45,13 @@ export function DashboardView({
   onMatching: (id?: string) => void;
   onSchedule: () => void;
   onParse: (id: string) => void;
+  paymentMetrics: {
+    pendingAmount: number;
+    overdueCount: number;
+    overdueAmount: number;
+    receivedThisMonth: number;
+  };
+  onOverdueOrders: () => void;
 }) {
   const m = dashboardMetrics(customers, nurses, currentDate);
   const conflicts = detectScheduleConflicts(nurses);
@@ -102,6 +114,31 @@ export function DashboardView({
             <small>{c}</small>
           </button>
         ))}
+      </section>
+      <section className="payment-overview" aria-label="收款概览">
+        <div>
+          <WalletCards />
+          <span>
+            待收款<strong>{formatMoney(paymentMetrics.pendingAmount)}</strong>
+            <small>全部未结清订单</small>
+          </span>
+        </div>
+        <button onClick={onOverdueOrders}>
+          <AlertTriangle />
+          <span>
+            尾款逾期<strong>{paymentMetrics.overdueCount} 笔</strong>
+            <small>待收 {formatMoney(paymentMetrics.overdueAmount)}</small>
+          </span>
+          <ArrowRight />
+        </button>
+        <div>
+          <BadgeDollarSign />
+          <span>
+            本月已收
+            <strong>{formatMoney(paymentMetrics.receivedThisMonth)}</strong>
+            <small>按有效收款日期统计</small>
+          </span>
+        </div>
       </section>
       <div className="ops-grid">
         <section className="ops-list">

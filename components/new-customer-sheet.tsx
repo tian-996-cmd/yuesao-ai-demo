@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react';
 import { ScanText } from 'lucide-react';
 import type { Customer, NewCustomerInput } from '@/lib/types';
 import { Button } from './ui/button';
+import { DateField } from './date-field';
 import { Input } from './ui/input';
 import { Textarea } from './ui/textarea';
 import {
@@ -123,10 +124,10 @@ export function NewCustomerSheet({
             </label>
             <label>
               预产期{' '}
-              <Input
-                type="date"
+              <DateField
                 value={form.dueDate}
-                onChange={(e) => set('dueDate', e.target.value)}
+                onChange={(value) => set('dueDate', value)}
+                placeholder="请选择预产日期"
                 required
               />
             </label>

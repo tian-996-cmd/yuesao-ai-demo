@@ -3,9 +3,11 @@ import {
   and,
   desc,
   eq,
+  gte,
   ilike,
   inArray,
   isNull,
+  lte,
   ne,
   notInArray,
   or,
@@ -14,6 +16,7 @@ import {
 import type { Database } from './db/client.js';
 import {
   customers,
+  payments,
   roles,
   serviceOrders,
   serviceSchedules,
@@ -29,7 +32,10 @@ import {
   listQuery,
   loginInput,
   orderInput,
+  orderListQuery,
   orderUpdateInput,
+  paymentInput,
+  paymentUpdateInput,
   scheduleInput,
   scheduleUpdateInput,
   userCreateInput,
@@ -39,6 +45,12 @@ import {
   workerUpdateInput,
 } from './validation.js';
 import { deriveAvailability, shanghaiToday } from './domain/availability.js';
+import {
+  calculatePaymentSummary,
+  centsToNumber,
+  moneyToCents,
+  type PaymentSummary,
+} from './domain/payment.js';
 
 const shanghaiRangeStart = (value: string) =>
   value.length === 10 ? new Date(`${value}T00:00:00+08:00`) : new Date(value);
@@ -56,6 +68,73 @@ const isoDay = (value: Date | string | null) =>
       }).format(new Date(value))
     : null;
 const now = () => new Date();
+
+type SelectDatabase = Pick<Database, 'select'>;
+
+async function receivedAmountByOrder(
+  database: SelectDatabase,
+  orderIds: string[],
+) {
+  if (!orderIds.length) return new Map<string, string>();
+  const rows = await database
+    .select({
+      orderId: payments.orderId,
+      amount: sql<string>`coalesce(sum(${payments.amount}), 0)::text`,
+    })
+    .from(payments)
+    .where(and(inArray(payments.orderId, orderIds), isNull(payments.deletedAt)))
+    .groupBy(payments.orderId);
+  return new Map(rows.map((row) => [row.orderId, row.amount]));
+}
+
+async function paymentSummaries(
+  database: SelectDatabase,
+  orders: Array<typeof serviceOrders.$inferSelect>,
+) {
+  const received = await receivedAmountByOrder(
+    database,
+    orders.map((order) => order.id),
+  );
+  const today = shanghaiToday();
+  return new Map(
+    orders.map((order) => [
+      order.id,
+      calculatePaymentSummary({
+        totalAmount: order.totalAmount,
+        depositAmount: order.depositAmount,
+        receivedAmount: received.get(order.id) ?? '0',
+        finalPaymentDueDate: order.finalPaymentDueDate,
+        today,
+      }),
+    ]),
+  );
+}
+
+function orderDto(
+  order: typeof serviceOrders.$inferSelect,
+  paymentSummary: PaymentSummary,
+  names: { customerName?: string; workerName?: string | null } = {},
+) {
+  return {
+    ...order,
+    ...names,
+    totalAmount: Number(order.totalAmount),
+    depositAmount: Number(order.depositAmount),
+    paymentSummary,
+  };
+}
+
+function paymentDto(
+  payment: typeof payments.$inferSelect,
+  creatorName: string | null,
+) {
+  return {
+    ...payment,
+    amount: Number(payment.amount),
+    creatorName: creatorName ?? '未知经办人',
+    voided: payment.deletedAt !== null,
+  };
+}
 
 function auth(request: FastifyRequest) {
   return request.user as AuthUser;
@@ -667,7 +746,7 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
     '/api/v1/orders',
     { preHandler: [app.authenticate] },
     async (request) => {
-      const query = listQuery.parse(request.query);
+      const query = orderListQuery.parse(request.query);
       const rows = await db
         .select({
           order: serviceOrders,
@@ -690,16 +769,31 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
               : undefined,
           ),
         )
-        .orderBy(desc(serviceOrders.createdAt))
-        .limit(query.pageSize)
-        .offset((query.page - 1) * query.pageSize);
+        .orderBy(desc(serviceOrders.createdAt));
+      const summaries = await paymentSummaries(
+        db,
+        rows.map(({ order }) => order),
+      );
+      const filtered = query.paymentStatus
+        ? rows.filter(
+            ({ order }) =>
+              summaries.get(order.id)?.paymentStatus === query.paymentStatus,
+          )
+        : rows;
+      const page = filtered.slice(
+        (query.page - 1) * query.pageSize,
+        query.page * query.pageSize,
+      );
       return {
-        items: rows.map(({ order, customerName, workerName }) => ({
-          ...order,
-          price: Number(order.price),
-          customerName,
-          workerName,
-        })),
+        items: page.map(({ order, customerName, workerName }) =>
+          orderDto(order, summaries.get(order.id)!, {
+            customerName,
+            workerName,
+          }),
+        ),
+        page: query.page,
+        pageSize: query.pageSize,
+        total: filtered.length,
       };
     },
   );
@@ -735,7 +829,9 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
             status: input.status,
             startDate: input.startDate,
             endDate: input.endDate,
-            price: String(input.price),
+            totalAmount: String(input.totalAmount),
+            depositAmount: String(input.depositAmount),
+            finalPaymentDueDate: input.finalPaymentDueDate ?? null,
             remark: input.remark ?? '',
             createdBy: actor.id,
             updatedBy: actor.id,
@@ -755,9 +851,10 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
           });
         return order;
       });
-      return reply
-        .code(201)
-        .send({ item: { ...item, price: Number(item.price) } });
+      const summaries = await paymentSummaries(db, [item]);
+      return reply.code(201).send({
+        item: orderDto(item, summaries.get(item.id)!),
+      });
     },
   );
   app.get(
@@ -771,7 +868,8 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
         .where(and(eq(serviceOrders.id, id), isNull(serviceOrders.deletedAt)))
         .limit(1);
       if (!item) throw new AppError(404, 'NOT_FOUND', '订单不存在');
-      return { item: { ...item, price: Number(item.price) } };
+      const summaries = await paymentSummaries(db, [item]);
+      return { item: orderDto(item, summaries.get(item.id)!) };
     },
   );
   app.patch(
@@ -786,12 +884,44 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
       const id = uuid.parse((request.params as { id: string }).id);
       const input = orderUpdateInput.parse(request.body);
       const item = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from service_orders where id = ${id} for update`,
+        );
         const [existing] = await tx
           .select()
           .from(serviceOrders)
           .where(and(eq(serviceOrders.id, id), isNull(serviceOrders.deletedAt)))
           .limit(1);
         if (!existing) throw new AppError(404, 'NOT_FOUND', '订单不存在');
+
+        if (input.totalAmount !== undefined) {
+          const received = await receivedAmountByOrder(tx, [id]);
+          if (
+            moneyToCents(input.totalAmount) <
+            moneyToCents(received.get(id) ?? '0')
+          )
+            throw new AppError(
+              409,
+              'TOTAL_BELOW_RECEIVED',
+              '订单总金额不能低于已收金额，请先处理收款记录。',
+            );
+          const nextDeposit =
+            input.depositAmount ?? Number(existing.depositAmount);
+          if (nextDeposit > input.totalAmount)
+            throw new AppError(
+              400,
+              'VALIDATION_ERROR',
+              '定金金额不能超过订单总金额',
+            );
+        } else if (
+          input.depositAmount !== undefined &&
+          input.depositAmount > Number(existing.totalAmount)
+        )
+          throw new AppError(
+            400,
+            'VALIDATION_ERROR',
+            '定金金额不能超过订单总金额',
+          );
 
         const nextWorkerId =
           input.workerId === undefined ? existing.workerId : input.workerId;
@@ -882,7 +1012,14 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
           .update(serviceOrders)
           .set({
             ...input,
-            price: input.price === undefined ? undefined : String(input.price),
+            totalAmount:
+              input.totalAmount === undefined
+                ? undefined
+                : String(input.totalAmount),
+            depositAmount:
+              input.depositAmount === undefined
+                ? undefined
+                : String(input.depositAmount),
             remark: input.remark ?? undefined,
             updatedBy: actor.id,
             updatedAt: now(),
@@ -891,7 +1028,8 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
           .returning();
         return updated;
       });
-      return { item: { ...item, price: Number(item.price) } };
+      const summaries = await paymentSummaries(db, [item]);
+      return { item: orderDto(item, summaries.get(item.id)!) };
     },
   );
   app.delete(
@@ -932,6 +1070,234 @@ export async function registerRoutes(app: FastifyInstance, db: Database) {
         if (!item) throw new AppError(404, 'NOT_FOUND', '订单不存在');
       });
       return reply.code(204).send();
+    },
+  );
+
+  app.get(
+    '/api/v1/orders/:id/payments',
+    { preHandler: [app.authenticate] },
+    async (request) => {
+      const orderId = uuid.parse((request.params as { id: string }).id);
+      const [order] = await db
+        .select()
+        .from(serviceOrders)
+        .where(eq(serviceOrders.id, orderId))
+        .limit(1);
+      if (!order) throw new AppError(404, 'NOT_FOUND', '订单不存在');
+      const rows = await db
+        .select({ payment: payments, creatorName: users.name })
+        .from(payments)
+        .leftJoin(users, eq(payments.createdBy, users.id))
+        .where(eq(payments.orderId, orderId))
+        .orderBy(desc(payments.paidAt), desc(payments.createdAt));
+      const summaries = await paymentSummaries(db, [order]);
+      return {
+        items: rows.map(({ payment, creatorName }) =>
+          paymentDto(payment, creatorName),
+        ),
+        paymentSummary: summaries.get(orderId),
+      };
+    },
+  );
+
+  app.post(
+    '/api/v1/orders/:id/payments',
+    { preHandler: [app.authenticate] },
+    async (request, reply) => {
+      const actor = assertRole(request, ['finance']);
+      const orderId = uuid.parse((request.params as { id: string }).id);
+      const input = paymentInput.parse(request.body);
+      const result = await db.transaction(async (tx) => {
+        await tx.execute(
+          sql`select id from service_orders where id = ${orderId} for update`,
+        );
+        const [order] = await tx
+          .select()
+          .from(serviceOrders)
+          .where(eq(serviceOrders.id, orderId))
+          .limit(1);
+        if (!order) throw new AppError(404, 'NOT_FOUND', '订单不存在');
+        if (order.deletedAt || order.status === 'cancelled')
+          throw new AppError(
+            409,
+            'ORDER_CANCELLED',
+            '已取消订单不能新增收款。',
+          );
+        const summaries = await paymentSummaries(tx, [order]);
+        const before = summaries.get(orderId)!;
+        if (moneyToCents(before.outstandingAmount) === BigInt(0))
+          throw new AppError(409, 'ORDER_PAID', '该订单已结清，无待收金额。');
+        if (moneyToCents(input.amount) > moneyToCents(before.outstandingAmount))
+          throw new AppError(
+            409,
+            'PAYMENT_EXCEEDS_OUTSTANDING',
+            '本次收款金额超过订单待收金额。',
+          );
+        const [payment] = await tx
+          .insert(payments)
+          .values({
+            orderId,
+            amount: String(input.amount),
+            paymentType: input.paymentType,
+            paymentMethod: input.paymentMethod,
+            paidAt: input.paidAt,
+            remark: input.remark ?? '',
+            createdBy: actor.id,
+            updatedBy: actor.id,
+          })
+          .returning();
+        const after = await paymentSummaries(tx, [order]);
+        return {
+          item: paymentDto(payment, actor.name),
+          paymentSummary: after.get(orderId),
+        };
+      });
+      return reply.code(201).send(result);
+    },
+  );
+
+  app.patch(
+    '/api/v1/payments/:id',
+    { preHandler: [app.authenticate] },
+    async (request) => {
+      const actor = assertRole(request, ['finance']);
+      const id = uuid.parse((request.params as { id: string }).id);
+      const input = paymentUpdateInput.parse(request.body);
+      return db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(payments)
+          .where(and(eq(payments.id, id), isNull(payments.deletedAt)))
+          .limit(1);
+        if (!existing) throw new AppError(404, 'NOT_FOUND', '收款记录不存在');
+        await tx.execute(
+          sql`select id from service_orders where id = ${existing.orderId} for update`,
+        );
+        const [order] = await tx
+          .select()
+          .from(serviceOrders)
+          .where(eq(serviceOrders.id, existing.orderId))
+          .limit(1);
+        if (!order) throw new AppError(404, 'NOT_FOUND', '订单不存在');
+        if (input.amount !== undefined) {
+          const [{ amount }] = await tx
+            .select({
+              amount: sql<string>`coalesce(sum(${payments.amount}) filter (where ${payments.id} <> ${id}), 0)::text`,
+            })
+            .from(payments)
+            .where(
+              and(
+                eq(payments.orderId, existing.orderId),
+                isNull(payments.deletedAt),
+              ),
+            );
+          if (
+            moneyToCents(amount) + moneyToCents(input.amount) >
+            moneyToCents(order.totalAmount)
+          )
+            throw new AppError(
+              409,
+              'PAYMENT_EXCEEDS_OUTSTANDING',
+              '本次收款金额超过订单待收金额。',
+            );
+        }
+        const [updated] = await tx
+          .update(payments)
+          .set({
+            ...input,
+            amount:
+              input.amount === undefined ? undefined : String(input.amount),
+            remark: input.remark ?? undefined,
+            updatedBy: actor.id,
+            updatedAt: now(),
+          })
+          .where(eq(payments.id, id))
+          .returning();
+        const [creator] = await tx
+          .select({ name: users.name })
+          .from(users)
+          .where(eq(users.id, updated.createdBy))
+          .limit(1);
+        const summaries = await paymentSummaries(tx, [order]);
+        return {
+          item: paymentDto(updated, creator?.name ?? null),
+          paymentSummary: summaries.get(order.id),
+        };
+      });
+    },
+  );
+
+  app.delete(
+    '/api/v1/payments/:id',
+    { preHandler: [app.authenticate] },
+    async (request, reply) => {
+      const actor = assertRole(request, ['finance']);
+      const id = uuid.parse((request.params as { id: string }).id);
+      await db.transaction(async (tx) => {
+        const [existing] = await tx
+          .select()
+          .from(payments)
+          .where(and(eq(payments.id, id), isNull(payments.deletedAt)))
+          .limit(1);
+        if (!existing) throw new AppError(404, 'NOT_FOUND', '收款记录不存在');
+        await tx.execute(
+          sql`select id from service_orders where id = ${existing.orderId} for update`,
+        );
+        await tx
+          .update(payments)
+          .set({ deletedAt: now(), updatedBy: actor.id, updatedAt: now() })
+          .where(eq(payments.id, id));
+      });
+      return reply.code(204).send();
+    },
+  );
+
+  app.get(
+    '/api/v1/dashboard/payments',
+    { preHandler: [app.authenticate] },
+    async () => {
+      const orders = await db
+        .select()
+        .from(serviceOrders)
+        .where(isNull(serviceOrders.deletedAt));
+      const summaries = await paymentSummaries(db, orders);
+      const today = shanghaiToday();
+      const monthStart = `${today.slice(0, 7)}-01`;
+      const [{ receivedThisMonth }] = await db
+        .select({
+          receivedThisMonth: sql<string>`coalesce(sum(${payments.amount}), 0)::text`,
+        })
+        .from(payments)
+        .where(
+          and(
+            isNull(payments.deletedAt),
+            gte(payments.paidAt, monthStart),
+            lte(payments.paidAt, today),
+          ),
+        );
+      const active = orders
+        .filter((order) => order.status !== 'cancelled')
+        .map((order) => summaries.get(order.id)!)
+        .filter(Boolean);
+      return {
+        pendingAmount: centsToNumber(
+          active.reduce(
+            (sum, item) => sum + moneyToCents(item.outstandingAmount),
+            BigInt(0),
+          ),
+        ),
+        overdueCount: active.filter((item) => item.paymentStatus === 'overdue')
+          .length,
+        overdueAmount: centsToNumber(
+          active
+            .filter((item) => item.paymentStatus === 'overdue')
+            .reduce(
+              (sum, item) => sum + moneyToCents(item.outstandingAmount),
+              BigInt(0),
+            ),
+        ),
+        receivedThisMonth: Number(receivedThisMonth),
+      };
     },
   );
 

@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { MaternityNurse } from '@/lib/nurse-types';
 import { Button } from './ui/button';
-import { Input } from './ui/input';
+import { DateField } from './date-field';
 import { Textarea } from './ui/textarea';
 import {
   Sheet,
@@ -96,19 +96,19 @@ export function ScheduleFormSheet({
           <div className="form-grid">
             <label>
               开始日期
-              <Input
-                type="date"
+              <DateField
                 value={start}
-                onChange={(e) => setStart(e.target.value)}
+                onChange={setStart}
+                placeholder="请选择开始日期"
                 required
               />
             </label>
             <label>
               结束日期
-              <Input
-                type="date"
+              <DateField
                 value={end}
-                onChange={(e) => setEnd(e.target.value)}
+                onChange={setEnd}
+                placeholder="请选择结束日期"
                 required
               />
             </label>

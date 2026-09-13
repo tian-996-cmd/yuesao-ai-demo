@@ -1,5 +1,11 @@
 import type { MaternityNurse, NurseFormInput } from '@/lib/nurse-types';
-import type { NewOrderInput, ServiceOrder } from '@/lib/order-types';
+import type {
+  NewOrderInput,
+  NewPaymentInput,
+  PaymentRecord,
+  PaymentSummary,
+  ServiceOrder,
+} from '@/lib/order-types';
 import type { Customer, DemandProfile, NewCustomerInput } from '@/lib/types';
 import { apiRequest, tokenStore } from './api-client';
 
@@ -104,13 +110,20 @@ export const productionApi = {
     }
   },
   async bootstrap() {
-    const [customers, workers, orders, context] = await Promise.all([
-      fetchAll<Customer>('/customers'),
-      fetchAll<MaternityNurse>('/workers'),
-      fetchAll<ServiceOrder>('/orders'),
-      apiRequest<{ currentDate: string; timeZone: string }>('/context'),
-    ]);
-    return { customers, nurses: workers, orders, context };
+    const [customers, workers, orders, context, paymentMetrics] =
+      await Promise.all([
+        fetchAll<Customer>('/customers'),
+        fetchAll<MaternityNurse>('/workers'),
+        fetchAll<ServiceOrder>('/orders'),
+        apiRequest<{ currentDate: string; timeZone: string }>('/context'),
+        apiRequest<{
+          pendingAmount: number;
+          overdueCount: number;
+          overdueAmount: number;
+          receivedThisMonth: number;
+        }>('/dashboard/payments'),
+      ]);
+    return { customers, nurses: workers, orders, context, paymentMetrics };
   },
   async createCustomer(input: NewCustomerInput) {
     return (
@@ -179,5 +192,31 @@ export const productionApi = {
         body: json(input),
       })
     ).item;
+  },
+  async listPayments(orderId: string) {
+    return apiRequest<{
+      items: PaymentRecord[];
+      paymentSummary: PaymentSummary;
+    }>(`/orders/${orderId}/payments`);
+  },
+  async createPayment(orderId: string, input: NewPaymentInput) {
+    return apiRequest<{
+      item: PaymentRecord;
+      paymentSummary: PaymentSummary;
+    }>(`/orders/${orderId}/payments`, {
+      method: 'POST',
+      body: json(input),
+    });
+  },
+  async voidPayment(paymentId: string) {
+    await apiRequest<void>(`/payments/${paymentId}`, { method: 'DELETE' });
+  },
+  async paymentDashboard() {
+    return apiRequest<{
+      pendingAmount: number;
+      overdueCount: number;
+      overdueAmount: number;
+      receivedThisMonth: number;
+    }>('/dashboard/payments');
   },
 };

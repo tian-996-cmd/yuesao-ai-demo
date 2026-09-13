@@ -31,7 +31,17 @@ import type {
   NurseFormInput,
   NurseStatus,
 } from '@/lib/nurse-types';
-import type { NewOrderInput, ServiceOrder } from '@/lib/order-types';
+import type {
+  NewOrderInput,
+  NewPaymentInput,
+  PaymentStatus,
+  ServiceOrder,
+} from '@/lib/order-types';
+import {
+  aggregatePaymentMetrics,
+  newDemoPayment,
+  summarizeDemoPayment,
+} from '@/lib/payment';
 import type { Customer, DemandProfile, NewCustomerInput } from '@/lib/types';
 import { addDays, DEMO_TODAY } from '@/lib/v3-engine';
 import {
@@ -45,7 +55,7 @@ import { customerService } from '@/services/customer-service';
 import { nurseService } from '@/services/nurse-service';
 import { mediaService } from '@/services/media-service';
 import { orderService } from '@/services/order-service';
-import { productionApi } from '@/services/production-api';
+import { productionApi, type SessionUser } from '@/services/production-api';
 import { tokenStore } from '@/services/api-client';
 
 export function DemoApp({
@@ -61,6 +71,7 @@ export function DemoApp({
       sessionStorage.getItem('yuesao-demo-pages-login') === '1',
   );
   const [authChecking, setAuthChecking] = useState(isProductionMode);
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [loading, setLoading] = useState(false);
   const [apiError, setApiError] = useState('');
   const [view, setView] = useState<ViewName>(initialView);
@@ -79,6 +90,19 @@ export function DemoApp({
   const [currentDate, setCurrentDate] = useState(
     isProductionMode ? '' : DEMO_TODAY.toISOString().slice(0, 10),
   );
+  const [paymentMetrics, setPaymentMetrics] = useState(() =>
+    isProductionMode
+      ? {
+          pendingAmount: 0,
+          overdueCount: 0,
+          overdueAmount: 0,
+          receivedThisMonth: 0,
+        }
+      : aggregatePaymentMetrics(
+          mockOrders,
+          DEMO_TODAY.toISOString().slice(0, 10),
+        ),
+  );
   const [selectedId, setSelectedId] = useState('wang'),
     [selectedNurseId, setSelectedNurseId] = useState('nurse_001');
   const [nurseFilter] = useState<NurseStatus>();
@@ -91,6 +115,9 @@ export function DemoApp({
   const [editingCustomer, setEditingCustomer] = useState<Customer>();
   const [editingOrder, setEditingOrder] = useState<ServiceOrder>();
   const [presetOrderWorkerId, setPresetOrderWorkerId] = useState<string>();
+  const [orderPaymentFilter, setOrderPaymentFilter] = useState<
+    PaymentStatus | '全部'
+  >('全部');
   const [message, setMessage] = useState(''),
     [demandOpen, setDemandOpen] = useState(false),
     [followupOpen, setFollowupOpen] = useState(false),
@@ -109,6 +136,7 @@ export function DemoApp({
       setNurses(data.nurses);
       setOrders(data.orders);
       setCurrentDate(data.context.currentDate);
+      setPaymentMetrics(data.paymentMetrics);
       setSelectedId((x) =>
         data.customers.some((c) => c.id === x)
           ? x
@@ -148,7 +176,8 @@ export function DemoApp({
       } else {
         productionApi
           .me()
-          .then(() => {
+          .then((user) => {
+            setSessionUser(user);
             setLoggedIn(true);
             return loadProduction();
           })
@@ -158,7 +187,9 @@ export function DemoApp({
     } else {
       setCustomers(customerService.load());
       setNurses(nurseService.load());
-      setOrders(orderService.load());
+      const demoOrders = orderService.load();
+      setOrders(demoOrders);
+      setPaymentMetrics(aggregatePaymentMetrics(demoOrders, currentDate));
     }
     return () => {
       window.removeEventListener('popstate', syncRoute);
@@ -177,6 +208,8 @@ export function DemoApp({
   const persistOrders = (next: ServiceOrder[]) => {
     setOrders(next);
     if (!isProductionMode) orderService.save(next);
+    if (!isProductionMode)
+      setPaymentMetrics(aggregatePaymentMetrics(next, currentDate));
   };
   const pathFor = (next: ViewName) =>
     next === 'dashboard'
@@ -340,9 +373,14 @@ export function DemoApp({
         await loadProduction();
       } else
         persistOrders(
-          orders.map((item) =>
-            item.id === editingOrder.id ? { ...editingOrder, ...input } : item,
-          ),
+          orders.map((item) => {
+            if (item.id !== editingOrder.id) return item;
+            const next = { ...editingOrder, ...input } as ServiceOrder;
+            return {
+              ...next,
+              paymentSummary: summarizeDemoPayment(next, currentDate),
+            };
+          }),
         );
       setEditingOrder(undefined);
       showMessage('订单已更新');
@@ -369,7 +407,18 @@ export function DemoApp({
         id: crypto.randomUUID(),
         customerName: customer?.name,
         workerName: worker?.name,
+        payments: [],
+        paymentSummary: {
+          totalAmount: input.totalAmount,
+          depositAmount: input.depositAmount,
+          receivedAmount: 0,
+          outstandingAmount: input.totalAmount,
+          finalPaymentDueDate: input.finalPaymentDueDate ?? null,
+          paymentStatus: 'unpaid',
+          overdueDays: 0,
+        },
       };
+      item.paymentSummary = summarizeDemoPayment(item, currentDate);
       persistOrders([item, ...orders]);
       if (worker && input.createSchedule)
         persistNurses(
@@ -398,6 +447,65 @@ export function DemoApp({
         );
       showMessage('演示订单已保存');
     }
+  };
+  const loadPayments = async (order: ServiceOrder) => {
+    if (isProductionMode) return productionApi.listPayments(order.id);
+    return {
+      items: order.payments ?? [],
+      paymentSummary: summarizeDemoPayment(order, currentDate),
+    };
+  };
+  const addPayment = async (order: ServiceOrder, input: NewPaymentInput) => {
+    if (isProductionMode) {
+      await productionApi.createPayment(order.id, input);
+      await loadProduction();
+      return productionApi.listPayments(order.id);
+    }
+    if (order.status === 'cancelled')
+      throw new Error('已取消订单不能新增收款。');
+    if (order.paymentSummary.outstandingAmount <= 0)
+      throw new Error('该订单已结清，无待收金额。');
+    if (
+      Math.round(input.amount * 100) >
+      Math.round(order.paymentSummary.outstandingAmount * 100)
+    )
+      throw new Error('本次收款金额超过订单待收金额。');
+    const updated = {
+      ...order,
+      payments: [
+        newDemoPayment(order.id, {
+          ...input,
+          creatorName: '王敏',
+          voided: false,
+        }),
+        ...(order.payments ?? []),
+      ],
+    };
+    updated.paymentSummary = summarizeDemoPayment(updated, currentDate);
+    persistOrders(
+      orders.map((item) => (item.id === order.id ? updated : item)),
+    );
+    return { items: updated.payments, paymentSummary: updated.paymentSummary };
+  };
+  const voidPayment = async (order: ServiceOrder, paymentId: string) => {
+    if (isProductionMode) {
+      await productionApi.voidPayment(paymentId);
+      await loadProduction();
+      return productionApi.listPayments(order.id);
+    }
+    const updated = {
+      ...order,
+      payments: (order.payments ?? []).map((payment) =>
+        payment.id === paymentId
+          ? { ...payment, voided: true, deletedAt: new Date().toISOString() }
+          : payment,
+      ),
+    };
+    updated.paymentSummary = summarizeDemoPayment(updated, currentDate);
+    persistOrders(
+      orders.map((item) => (item.id === order.id ? updated : item)),
+    );
+    return { items: updated.payments, paymentSummary: updated.paymentSummary };
   };
   const updateCustomer = async (
     id: string,
@@ -468,7 +576,9 @@ export function DemoApp({
           status: 'confirmed',
           startDate: customer.dueDate,
           endDate: end,
-          price: customer.budgetMax,
+          totalAmount: customer.budgetMax,
+          depositAmount: 0,
+          finalPaymentDueDate: null,
           remark: '由匹配中心锁定',
           createSchedule: true,
         });
@@ -585,7 +695,9 @@ export function DemoApp({
   const reset = () => {
     setCustomers(customerService.reset());
     setNurses(nurseService.reset());
-    setOrders(orderService.reset());
+    const demoOrders = orderService.reset();
+    setOrders(demoOrders);
+    setPaymentMetrics(aggregatePaymentMetrics(demoOrders, currentDate));
     setMedia(mediaService.reset());
     setSelectedId('wang');
     setSelectedNurseId('nurse_001');
@@ -593,7 +705,7 @@ export function DemoApp({
   };
   const login = async (username: string, password: string) => {
     if (isProductionMode) {
-      await productionApi.login(username, password);
+      setSessionUser(await productionApi.login(username, password));
       setLoggedIn(true);
       await loadProduction();
     } else {
@@ -609,6 +721,7 @@ export function DemoApp({
         sessionStorage.removeItem('yuesao-demo-pages-login');
     } finally {
       setLoggedIn(false);
+      setSessionUser(null);
       navigate('dashboard');
     }
   };
@@ -718,6 +831,11 @@ export function DemoApp({
             nurses={nurses}
             media={media}
             currentDate={currentDate}
+            paymentMetrics={paymentMetrics}
+            onOverdueOrders={() => {
+              setOrderPaymentFilter('overdue');
+              navigate('orders');
+            }}
             onOpenCustomer={openCustomer}
             onCreateCustomer={() => setCustomerSheetOpen(true)}
             onMatching={openMatching}
@@ -796,6 +914,15 @@ export function DemoApp({
         {view === 'orders' && (
           <OrdersView
             orders={orders}
+            currentDate={currentDate}
+            canManagePayments={
+              !isProductionMode ||
+              Boolean(sessionUser?.isAdmin || sessionUser?.role === 'finance')
+            }
+            initialPaymentFilter={orderPaymentFilter}
+            onLoadPayments={loadPayments}
+            onAddPayment={addPayment}
+            onVoidPayment={voidPayment}
             onCreate={() => {
               setEditingOrder(undefined);
               setOrderSheetOpen(true);

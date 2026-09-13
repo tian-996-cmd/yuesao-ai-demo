@@ -20,7 +20,9 @@ void test('服务人员更新校验可以只解析局部字段且不注入默认
 });
 
 void test('订单更新校验可以只解析局部字段且不注入默认值', () => {
-  assert.deepEqual(orderUpdateInput.parse({ price: 6800 }), { price: 6800 });
+  assert.deepEqual(orderUpdateInput.parse({ totalAmount: 6800 }), {
+    totalAmount: 6800,
+  });
 });
 
 void test('排期更新校验可以只解析局部字段且不注入默认值', () => {
@@ -31,8 +33,7 @@ void test('排期更新校验可以只解析局部字段且不注入默认值', 
 
 void test('局部更新同时提供范围两端时仍校验顺序', () => {
   assert.equal(
-    customerUpdateInput.safeParse({ budgetMin: 8000, budgetMax: 6000 })
-      .success,
+    customerUpdateInput.safeParse({ budgetMin: 8000, budgetMax: 6000 }).success,
     false,
   );
   assert.equal(

@@ -144,7 +144,9 @@ const orderFields = {
   status: orderStatus.default('pending'),
   startDate: dateText,
   endDate: dateText,
-  price: z.number().min(0),
+  totalAmount: z.number().positive().multipleOf(0.01),
+  depositAmount: z.number().min(0).multipleOf(0.01).default(0),
+  finalPaymentDueDate: dateText.optional().nullable(),
   remark: z.string().max(5000).optional().nullable(),
   createSchedule: z.boolean().default(true),
 };
@@ -153,11 +155,16 @@ export const orderInput = z
   .refine((value) => value.endDate >= value.startDate, {
     path: ['endDate'],
     message: '结束日期不能早于开始日期',
+  })
+  .refine((value) => value.depositAmount <= value.totalAmount, {
+    path: ['depositAmount'],
+    message: '定金金额不能超过订单总金额',
   });
 export const orderUpdateInput = z
   .object({
     ...orderFields,
     status: orderFields.status.unwrap(),
+    depositAmount: orderFields.depositAmount.unwrap(),
   })
   .omit({ createSchedule: true })
   .partial()
@@ -170,7 +177,35 @@ export const orderUpdateInput = z
       path: ['endDate'],
       message: '结束日期不能早于开始日期',
     },
+  )
+  .refine(
+    (value) =>
+      value.depositAmount === undefined ||
+      value.totalAmount === undefined ||
+      value.depositAmount <= value.totalAmount,
+    {
+      path: ['depositAmount'],
+      message: '定金金额不能超过订单总金额',
+    },
   );
+
+export const paymentType = z.enum(['deposit', 'final', 'partial', 'other']);
+export const paymentMethod = z.enum([
+  'cash',
+  'wechat',
+  'alipay',
+  'bank_transfer',
+  'other',
+]);
+const paymentFields = {
+  amount: z.number().positive().multipleOf(0.01),
+  paymentType,
+  paymentMethod,
+  paidAt: dateText,
+  remark: z.string().max(2000).optional().nullable(),
+};
+export const paymentInput = z.object(paymentFields);
+export const paymentUpdateInput = z.object(paymentFields).partial();
 
 export const scheduleStatus = z.enum([
   'pending',
@@ -201,4 +236,10 @@ export const listQuery = z.object({
   status: z.string().max(40).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(100).default(50),
+});
+
+export const orderListQuery = listQuery.extend({
+  paymentStatus: z
+    .enum(['unpaid', 'partial_paid', 'pending_final', 'overdue', 'paid'])
+    .optional(),
 });

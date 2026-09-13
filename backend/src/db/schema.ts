@@ -187,7 +187,13 @@ export const serviceOrders = pgTable(
     status: varchar('status', { length: 30 }).notNull().default('pending'),
     startDate: date('start_date').notNull(),
     endDate: date('end_date').notNull(),
-    price: numeric('price', { precision: 12, scale: 2 }).notNull().default('0'),
+    totalAmount: numeric('total_amount', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    depositAmount: numeric('deposit_amount', { precision: 12, scale: 2 })
+      .notNull()
+      .default('0'),
+    finalPaymentDueDate: date('final_payment_due_date'),
     remark: text('remark'),
     ...auditColumns,
   },
@@ -199,7 +205,51 @@ export const serviceOrders = pgTable(
       'orders_date_range_check',
       sql`${table.endDate} >= ${table.startDate}`,
     ),
-    check('orders_price_nonnegative_check', sql`${table.price} >= 0`),
+    check(
+      'orders_deposit_amount_check',
+      sql`${table.depositAmount} >= 0 AND ${table.depositAmount} <= ${table.totalAmount}`,
+    ),
+  ],
+);
+
+export const payments = pgTable(
+  'payments',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    orderId: uuid('order_id')
+      .notNull()
+      .references(() => serviceOrders.id, { onDelete: 'restrict' }),
+    amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
+    paymentType: varchar('payment_type', { length: 20 }).notNull(),
+    paymentMethod: varchar('payment_method', { length: 30 }).notNull(),
+    paidAt: date('paid_at').notNull(),
+    remark: text('remark'),
+    createdBy: uuid('created_by')
+      .notNull()
+      .references(() => users.id, { onDelete: 'restrict' }),
+    updatedBy: uuid('updated_by').references(() => users.id, {
+      onDelete: 'restrict',
+    }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    deletedAt: timestamp('deleted_at', { withTimezone: true }),
+  },
+  (table) => [
+    index('payments_order_idx').on(table.orderId),
+    index('payments_paid_at_idx').on(table.paidAt),
+    check('payments_amount_positive_check', sql`${table.amount} > 0`),
+    check(
+      'payments_type_check',
+      sql`${table.paymentType} IN ('deposit', 'final', 'partial', 'other', 'refund')`,
+    ),
+    check(
+      'payments_method_check',
+      sql`${table.paymentMethod} IN ('cash', 'wechat', 'alipay', 'bank_transfer', 'other')`,
+    ),
   ],
 );
 
@@ -270,6 +320,17 @@ export const orderRelations = relations(serviceOrders, ({ one, many }) => ({
     references: [serviceWorkers.id],
   }),
   schedules: many(serviceSchedules),
+  payments: many(payments),
+}));
+export const paymentRelations = relations(payments, ({ one }) => ({
+  order: one(serviceOrders, {
+    fields: [payments.orderId],
+    references: [serviceOrders.id],
+  }),
+  creator: one(users, {
+    fields: [payments.createdBy],
+    references: [users.id],
+  }),
 }));
 export const scheduleRelations = relations(serviceSchedules, ({ one }) => ({
   worker: one(serviceWorkers, {
