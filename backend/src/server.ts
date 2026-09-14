@@ -6,7 +6,7 @@ import { flattenError, ZodError } from 'zod';
 import { loadConfig } from './config.js';
 import { createDatabase } from './db/client.js';
 import { users } from './db/schema.js';
-import { AppError } from './errors.js';
+import { AppError, databaseErrorCode } from './errors.js';
 import { registerRoutes } from './routes.js';
 
 const config = loadConfig();
@@ -60,7 +60,7 @@ app.setErrorHandler((error, request, reply) => {
         details: error.details,
       },
     });
-  const pgCode = (error as { code?: string }).code;
+  const pgCode = databaseErrorCode(error);
   if (pgCode === '23505')
     return reply.code(409).send({
       error: { code: 'DUPLICATE_RECORD', message: '相同的唯一数据已经存在' },
